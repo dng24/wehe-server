@@ -29,7 +29,7 @@ func main() {
         }
     }
 
-    if len(os.Args) < 2 {
+    if len(os.Args) < 1 {
         fmt.Println("\"replay\" or \"update\" command expected")
         os.Exit(1)
     }
