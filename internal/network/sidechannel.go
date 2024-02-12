@@ -7,30 +7,13 @@ import (
     "net"
     "strconv"
     "strings"
+
+    "wehe-server/internal/client"
 )
 
 const (
     port = 55556
 )
-
-type ReplayType int
-
-const (
-    Original ReplayType = iota
-    Random
-)
-
-// The struct that is received on initial contact from the client
-type ClientInfo struct {
-    userID string // the 10 character user ID
-    replayID ReplayType // indicates whether replay is the original or random replay
-    replayName string // name of the replay to run
-    extraString string // extra information; in the current version, it is number attempts client makes to MLab before successful connection
-    testID int // the ID of the test for the particular user
-    isLastReplay bool // true if this is the last replay of the test; false otherwise
-    publicIP string // public IP of the client retrieved from the test port
-    clientVersion string // client version number of Wehe
-}
 
 // Channel that allows client to notify server which replay it would like to run in addition to
 // exchanging metadata, like carrier name, GPS info.
@@ -67,57 +50,121 @@ func (sideChannel SideChannel) StartServer(errChan chan<- error) {
             continue
         }
 
-        go sideChannel.handleConnection(conn)
+        errChan2 := make(chan error)
+        go sideChannel.handleConnection(conn, errChan2)
+        err = <-errChan2
+        if err != nil {
+            fmt.Println("Side channel error:", err)
+        }
     }
 
     errChan <- nil
 }
 
-func (sideChannel SideChannel) handleConnection(conn net.Conn) {
+// Handles a side channel connection from a client.
+// conn: the client side channel connection
+// errChan: the error channel to return any errors
+func (sideChannel SideChannel) handleConnection(conn net.Conn, errChan chan<- error) {
     defer conn.Close()
 
-    sideChannel.receiveID(conn)
+    clt, err := sideChannel.receiveID(conn)
+    if err != nil {
+        errChan <- err
+        return
+    }
+
+    majorVersion, err := clt.GetMajorVersionNumber()
+    if err != nil {
+        errChan <- err
+        return
+    }
+
+    // Wehe version before 4.0 have a different protocol than current Wehe versions
+    if majorVersion < 4 {
+        err = handleOldSideChannel(conn, clt)
+        if err != nil {
+            errChan <- err
+            return
+        }
+    } else {
+        for {
+            buffer := make([]byte, 1024)
+            _, err := conn.Read(buffer)
+            if err != nil {
+                errChan <- err
+                return
+            }
+            opcode := buffer[0]
+            switch opcode {
+            case 2:
+                clt.Ask4Permission()
+            case 3:
+                message, err := getMessage(buffer)
+                if err != nil {
+                    errChan <- err
+                    return
+                }
+                clt.ReceiveDeviceInfo(message)
+            default:
+                errChan <- fmt.Errorf("Unknown side channel opcode: %d\n", opcode)
+            }
+        }
+    }
+    errChan <- nil
+}
+
+// Get the message portion of the bytes received from the client.
+// Bytes received from client should be in format of:
+//     first byte: opcode
+//     all following bytes: message
+// buffer: the bytes received from the client
+// Returns the message or any errors
+func getMessage(buffer []byte) (string, error) {
+    if len(buffer) < 2 {
+        return "", fmt.Errorf("Cannot get message from side channel buffer; buffer too short\n")
+    }
+    return string(buffer[1:]), nil
 }
 
 // Receives the ID declare by the client.
 // conn: the connection to the client
 // Returns a information about the client or any errors
-func (sideChannel SideChannel) receiveID(conn net.Conn) (ClientInfo, error) {
+func (sideChannel SideChannel) receiveID(conn net.Conn) (client.Client, error) {
     buffer := make([]byte, 1024)
     _, err := conn.Read(buffer)
     if err != nil {
-        return ClientInfo{}, err
+        return client.Client{}, err
     }
 
     pieces := strings.Split(string(buffer), ";")
     if len(pieces) < 6 {
-        return ClientInfo{}, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
+        return client.Client{}, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
     }
 
     userID := pieces[0]
 
     replayIDInt, err := strconv.Atoi(pieces[1])
     if err != nil {
-        return ClientInfo{}, err
+        return client.Client{}, err
     }
-    var replayID ReplayType
+    var replayID client.ReplayType
     if replayIDInt == 0 {
-        replayID = Original
+        replayID = client.Original
     } else if replayIDInt == 1 {
-        replayID = Random
+        replayID = client.Random
     } else {
-        return ClientInfo{}, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
+        return client.Client{}, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
     }
 
     replayName := pieces[2]
     extraString := pieces[3]
     testID, err := strconv.Atoi(pieces[4])
     if err != nil {
-        return ClientInfo{}, err
+        return client.Client{}, err
     }
     isLastReplay, err := strToBool(pieces[5])
     if err != nil {
-        return ClientInfo{}, err
+        return client.Client{}, err
     }
 
     // Some ISPs may give clients multiple IPs - one for each port. We want to use the test port
@@ -126,7 +173,7 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (ClientInfo, error) {
     // then we just use the side channel IP of the client.
     publicIP, err := getClientPublicIP(conn)
     if err != nil {
-        return ClientInfo{}, err
+        return client.Client{}, err
     }
     clientVersion := "1.0"
     if len(pieces) > 6 {
@@ -136,19 +183,20 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (ClientInfo, error) {
         clientVersion = pieces[7]
     }
 
-    clientInfo := ClientInfo{
-        userID: userID,
-        replayID: replayID,
-        replayName: replayName,
-        extraString: extraString,
-        testID: testID,
-        isLastReplay: isLastReplay,
-        publicIP: publicIP,
-        clientVersion: clientVersion,
+    clt := client.Client{
+        Conn: conn,
+        UserID: userID,
+        ReplayID: replayID,
+        ReplayName: replayName,
+        ExtraString: extraString,
+        TestID: testID,
+        IsLastReplay: isLastReplay,
+        PublicIP: publicIP,
+        ClientVersion: clientVersion,
     }
 
-    fmt.Println(clientInfo)
-    return clientInfo, nil
+    fmt.Println(clt)
+    return clt, nil
 }
 
 // Converts a string to boolean.

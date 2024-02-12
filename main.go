@@ -10,6 +10,7 @@ import (
     "wehe-server/internal/config"
 )
 
+//TODO: handle interrupt cleanup and add check to determine if client is too old
 func main() {
     // parse command line arguments
     replaySubcommand := flag.NewFlagSet("replay", flag.ExitOnError)
