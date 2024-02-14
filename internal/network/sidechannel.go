@@ -8,7 +8,7 @@ import (
     "strconv"
     "strings"
 
-    "wehe-server/internal/client"
+    "wehe-server/internal/clienthandler"
 )
 
 const (
@@ -20,12 +20,16 @@ const (
 type SideChannel struct {
     IP string // IP server should listen on
     Port int // TCP port server should listen on
+    ReplayNames []string // names of all the replays
+    ConnectedClients *clienthandler.ConnectedClients // connected clients to the side channel
 }
 
-func NewSideChannel(ip string) SideChannel {
+func NewSideChannel(ip string, replayNames []string) SideChannel {
     return SideChannel{
         IP: ip,
         Port: port,
+        ReplayNames: replayNames,
+        ConnectedClients: clienthandler.NewConnectedClients(),
     }
 }
 
@@ -50,32 +54,27 @@ func (sideChannel SideChannel) StartServer(errChan chan<- error) {
             continue
         }
 
-        errChan2 := make(chan error)
-        go sideChannel.handleConnection(conn, errChan2)
-        err = <-errChan2
-        if err != nil {
-            fmt.Println("Side channel error:", err)
-        }
+        go sideChannel.handleConnection(conn)
     }
 
     errChan <- nil
 }
 
-// Handles a side channel connection from a client.
+// Handles a side channel connection from a clienthandler.
 // conn: the client side channel connection
 // errChan: the error channel to return any errors
-func (sideChannel SideChannel) handleConnection(conn net.Conn, errChan chan<- error) {
+func (sideChannel SideChannel) handleConnection(conn net.Conn) {
     defer conn.Close()
 
     clt, err := sideChannel.receiveID(conn)
     if err != nil {
-        errChan <- err
+        sideChannel.handleSideChannelError(err, clienthandler.Client{})
         return
     }
 
     majorVersion, err := clt.GetMajorVersionNumber()
     if err != nil {
-        errChan <- err
+        sideChannel.handleSideChannelError(err, clt)
         return
     }
 
@@ -83,97 +82,108 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn, errChan chan<- er
     if majorVersion < 4 {
         err = handleOldSideChannel(conn, clt)
         if err != nil {
-            errChan <- err
+            sideChannel.handleSideChannelError(err, clt)
             return
         }
     } else {
         for {
             buffer := make([]byte, 1024)
-            _, err := conn.Read(buffer)
+            n, err := conn.Read(buffer)
             if err != nil {
-                errChan <- err
+                sideChannel.handleSideChannelError(err, clt)
                 return
             }
             opcode := buffer[0]
+            fmt.Println("Got opcode:", opcode)
             switch opcode {
             case 2:
-                clt.Ask4Permission()
+                sideChannel.ask4Permission(clt)
             case 3:
-                message, err := getMessage(buffer)
+                message, err := getMessage(buffer, n)
                 if err != nil {
-                    errChan <- err
+                    sideChannel.handleSideChannelError(err, clt)
                     return
                 }
                 clt.ReceiveDeviceInfo(message)
             default:
-                errChan <- fmt.Errorf("Unknown side channel opcode: %d\n", opcode)
+                sideChannel.handleSideChannelError(fmt.Errorf("Unknown side channel opcode: %d\n", opcode), clt)
             }
         }
     }
-    errChan <- nil
 }
 
-// Get the message portion of the bytes received from the client.
+// Handles errors thrown by a side channel connection.
+// err: the error that was thrown
+// clt: the client handler of the connection that errored
+func (sideChannel SideChannel) handleSideChannelError(err error, clt clienthandler.Client) {
+    fmt.Println("Side channel error:", err)
+    clt.CleanUp(sideChannel.ConnectedClients)
+}
+
+// Get the message portion of the bytes received from the clienthandler.
 // Bytes received from client should be in format of:
 //     first byte: opcode
 //     all following bytes: message
 // buffer: the bytes received from the client
+// n: number bytes received
 // Returns the message or any errors
-func getMessage(buffer []byte) (string, error) {
+func getMessage(buffer []byte, n int) (string, error) {
     if len(buffer) < 2 {
         return "", fmt.Errorf("Cannot get message from side channel buffer; buffer too short\n")
     }
-    return string(buffer[1:]), nil
+    return string(buffer[1:n]), nil
 }
 
-// Receives the ID declare by the client.
+// Receives the ID declare by the clienthandler.
 // conn: the connection to the client
 // Returns a information about the client or any errors
-func (sideChannel SideChannel) receiveID(conn net.Conn) (client.Client, error) {
+func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, error) {
     buffer := make([]byte, 1024)
     _, err := conn.Read(buffer)
     if err != nil {
-        return client.Client{}, err
+        return clienthandler.Client{}, err
     }
 
     pieces := strings.Split(string(buffer), ";")
     if len(pieces) < 6 {
-        return client.Client{}, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
+        return clienthandler.Client{}, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
     }
 
     userID := pieces[0]
 
     replayIDInt, err := strconv.Atoi(pieces[1])
     if err != nil {
-        return client.Client{}, err
+        return clienthandler.Client{}, err
     }
-    var replayID client.ReplayType
+    var replayID clienthandler.ReplayType
     if replayIDInt == 0 {
-        replayID = client.Original
+        replayID = clienthandler.Original
     } else if replayIDInt == 1 {
-        replayID = client.Random
+        replayID = clienthandler.Random
     } else {
-        return client.Client{}, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
+        return clienthandler.Client{}, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
     }
 
-    replayName := pieces[2]
+    //TODO: change client replay files replay names to use _ instead of -, then delete this terrible replace code
+    replayName := strings.Replace(pieces[2], "-", "_", -1)
+
     extraString := pieces[3]
     testID, err := strconv.Atoi(pieces[4])
     if err != nil {
-        return client.Client{}, err
+        return clienthandler.Client{}, err
     }
     isLastReplay, err := strToBool(pieces[5])
     if err != nil {
-        return client.Client{}, err
+        return clienthandler.Client{}, err
     }
 
     // Some ISPs may give clients multiple IPs - one for each port. We want to use the test port
     // as the client's public IP. Client may send us an IP, which is the IP of the client using
     // the test port. If client does not provide us with an IP, or if the IP provided is 127.0.0.1,
-    // then we just use the side channel IP of the client.
+    // then we just use the side channel IP of the clienthandler.
     publicIP, err := getClientPublicIP(conn)
     if err != nil {
-        return client.Client{}, err
+        return clienthandler.Client{}, err
     }
     clientVersion := "1.0"
     if len(pieces) > 6 {
@@ -183,7 +193,7 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (client.Client, error) {
         clientVersion = pieces[7]
     }
 
-    clt := client.Client{
+    clt := clienthandler.Client{
         Conn: conn,
         UserID: userID,
         ReplayID: replayID,
@@ -197,6 +207,14 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (client.Client, error) {
 
     fmt.Println(clt)
     return clt, nil
+}
+
+// Determines if client can run replay and seriailzes the response to send back to the client.
+// clt: the client handler that made the request
+func (sideChannel SideChannel) ask4Permission(clt clienthandler.Client) {
+    status, info := clt.Ask4Permission(sideChannel.ReplayNames, sideChannel.ConnectedClients)
+    resp := status + ";" + info
+    clt.Conn.Write([]byte(resp))
 }
 
 // Converts a string to boolean.

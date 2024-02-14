@@ -23,7 +23,6 @@ func Run(cfg config.Config) error {
     if err != nil {
         return err
     }
-    _ = replayNames
     portNumbers, err := getTestPorts(cfg.PortNumbersFile)
     if err != nil {
         return err
@@ -49,7 +48,7 @@ func Run(cfg config.Config) error {
         udpServers = append(udpServers, udpServer)
     }
 
-    sideChannel := network.NewSideChannel("0.0.0.0")
+    sideChannel := network.NewSideChannel("0.0.0.0", replayNames)
     go sideChannel.StartServer(errChan)
 
     err = <-errChan

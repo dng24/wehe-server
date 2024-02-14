@@ -4,10 +4,10 @@ package network
 import (
     "net"
 
-    "wehe-server/internal/client"
+    "wehe-server/internal/clienthandler"
 )
 
-func handleOldSideChannel(conn net.Conn, clientInfo client.Client) error {
+func handleOldSideChannel(conn net.Conn, clientInfo clienthandler.Client) error {
 
     return nil
 }
