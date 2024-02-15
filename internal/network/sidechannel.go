@@ -15,6 +15,21 @@ const (
     port = 55556
 )
 
+type opcode byte // request type from the client
+
+const (
+    ask4permission opcode = iota
+    mobileStats
+)
+
+type responseCode byte // code representing the status of a response back to the client
+
+const (
+    okResponse responseCode = iota
+    clientInputError
+    serverError
+)
+
 // Channel that allows client to notify server which replay it would like to run in addition to
 // exchanging metadata, like carrier name, GPS info.
 type SideChannel struct {
@@ -96,21 +111,30 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
             opcode := buffer[0]
             fmt.Println("Got opcode:", opcode)
             switch opcode {
-            case 2:
+            case byte(ask4permission):
                 sideChannel.ask4Permission(clt)
-            case 3:
-                message, err := getMessage(buffer, n)
-                if err != nil {
-                    sideChannel.handleSideChannelError(err, clt)
-                    return
-                }
-                clt.ReceiveDeviceInfo(message)
+            case byte(mobileStats):
+                sideChannel.receiveMobileStats(clt, buffer[:n])
             default:
                 sideChannel.handleSideChannelError(fmt.Errorf("Unknown side channel opcode: %d\n", opcode), clt)
             }
         }
     }
 }
+
+// Sends a response back to the client.
+// clt: the client
+// respCode: the status of the response
+// message: the information to return the to client
+func (sideChannel SideChannel) sendResponse(clt clienthandler.Client, respCode responseCode, message string) {
+    messageBytes := []byte(message)
+    resp := make([]byte, len(messageBytes) + 1)
+    resp[0] = byte(respCode)
+    copy(resp[1:], messageBytes)
+
+    clt.Conn.Write(resp)
+}
+
 
 // Handles errors thrown by a side channel connection.
 // err: the error that was thrown
@@ -209,14 +233,6 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, e
     return clt, nil
 }
 
-// Determines if client can run replay and seriailzes the response to send back to the client.
-// clt: the client handler that made the request
-func (sideChannel SideChannel) ask4Permission(clt clienthandler.Client) {
-    status, info := clt.Ask4Permission(sideChannel.ReplayNames, sideChannel.ConnectedClients)
-    resp := status + ";" + info
-    clt.Conn.Write([]byte(resp))
-}
-
 // Converts a string to boolean.
 // str: the string to convert into a bool
 // Returns a bool or any errors
@@ -248,4 +264,16 @@ func getClientPublicIP(conn net.Conn) (string, error) {
     }
 
     return ip.String(), nil
+}
+
+// Determines if client can run replay and seriailzes the response to send back to the client.
+// clt: the client handler that made the request
+func (sideChannel SideChannel) ask4Permission(clt clienthandler.Client) {
+    status, info := clt.Ask4Permission(sideChannel.ReplayNames, sideChannel.ConnectedClients)
+    resp := status + ";" + info
+    sideChannel.sendResponse(clt, okResponse, resp)
+}
+
+func (sideChannel SideChannel) receiveMobileStats(clt clienthandler.Client, buffer []byte) {
+    //stats, err := clt.ReceiveMobileStats(clt, message)
 }
