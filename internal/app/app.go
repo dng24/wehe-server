@@ -6,8 +6,8 @@ import (
     "fmt"
     "os"
 
-    "wehe-server/internal/clienthandler"
     "wehe-server/internal/config"
+    "wehe-server/internal/geolocation"
     "wehe-server/internal/network"
 )
 
@@ -29,7 +29,7 @@ func Run(cfg config.Config) error {
         return err
     }
 
-    err = clienthandler.InitGeoDB()
+    err = geolocation.Init()
     if err != nil {
         return err
     }

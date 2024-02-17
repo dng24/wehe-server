@@ -11,12 +11,12 @@ import (
     "sync"
     "time"
 
-    "github.com/ringsaturn/tzf"
-    "github.com/sams96/rgeo"
     "github.com/shirou/gopsutil/v3/cpu"
     "github.com/shirou/gopsutil/v3/disk"
     "github.com/shirou/gopsutil/v3/mem"
     psutilnet "github.com/shirou/gopsutil/v3/net"
+
+    "wehe-server/internal/geolocation"
 )
 
 const (
@@ -36,24 +36,6 @@ const (
     Original ReplayType = iota
     Random
 )
-
-var reverseGeoDB *rgeo.Rgeo // database used to perfrom reverse geocode lookup
-var timeZoneDB tzf.F // database to lookup time zone based on location
-
-// Initializes the databases to perform reverse geocode lookup and time zone finder.
-// Retruns any errors
-func InitGeoDB() error {
-    var err error
-    reverseGeoDB, err = rgeo.New(rgeo.Countries110, rgeo.Cities10)
-    if err != nil {
-        return err
-    }
-    timeZoneDB, err = tzf.NewDefaultFinder()
-    if err != nil {
-        return err
-    }
-    return nil
-}
 
 type ConnectedClients struct {
     clientIPs map[string]struct{} // set of all currently connected client IPs
@@ -236,21 +218,19 @@ func (clt Client) ReceiveMobileStats(message string) error {
         lat = math.Round(lat * 10) / 10
         long = math.Round(long * 10) / 10
         // get city and country of client
-        loc, err := reverseGeoDB.ReverseGeocode([]float64{long, lat}) // not a bug, it is long,lat
+        loc, err := geolocation.ReverseGeocode(lat, long)
+        if err != nil {
+            return err
+        }
+        timeZoneLocation, err := time.LoadLocation(loc.TimeZone)
         if err != nil {
             return err
         }
         locationInfo["country"] = loc.Country
         locationInfo["city"] = loc.City
+        locationInfo["localTime"] = clt.StartTime.In(timeZoneLocation).Format("2006-01-02 15:04:05-0700")
         locationInfo["latitude"] = lat
         locationInfo["longitude"] = long
-
-        // get local time of client
-        timeZone, err := time.LoadLocation(timeZoneDB.GetTimezoneName(long, lat))
-        if err != nil {
-            return err
-        }
-        locationInfo["localTime"] = clt.StartTime.In(timeZone).Format("2006-01-02 15:04:05-0700")
     }
     fmt.Printf("mobile stats: %v", mobileStatsData)
     //TODO: figure out what to do with mobile stats once it is processed
