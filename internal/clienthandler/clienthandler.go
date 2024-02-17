@@ -2,13 +2,17 @@
 package clienthandler
 
 import (
+    "encoding/json"
     "fmt"
+    "math"
     "net"
     "strconv"
     "strings"
     "sync"
     "time"
 
+    "github.com/ringsaturn/tzf"
+    "github.com/sams96/rgeo"
     "github.com/shirou/gopsutil/v3/cpu"
     "github.com/shirou/gopsutil/v3/disk"
     "github.com/shirou/gopsutil/v3/mem"
@@ -32,6 +36,24 @@ const (
     Original ReplayType = iota
     Random
 )
+
+var reverseGeoDB *rgeo.Rgeo // database used to perfrom reverse geocode lookup
+var timeZoneDB tzf.F // database to lookup time zone based on location
+
+// Initializes the databases to perform reverse geocode lookup and time zone finder.
+// Retruns any errors
+func InitGeoDB() error {
+    var err error
+    reverseGeoDB, err = rgeo.New(rgeo.Countries110, rgeo.Cities10)
+    if err != nil {
+        return err
+    }
+    timeZoneDB, err = tzf.NewDefaultFinder()
+    if err != nil {
+        return err
+    }
+    return nil
+}
 
 type ConnectedClients struct {
     clientIPs map[string]struct{} // set of all currently connected client IPs
@@ -73,6 +95,7 @@ type Client struct {
     IsLastReplay bool // true if this is the last replay of the test; false otherwise
     PublicIP string // public IP of the client retrieved from the test port
     ClientVersion string // client version number of Wehe
+    StartTime time.Time // time when side channel connection was made
 }
 
 func (clt Client) GetMajorVersionNumber() (int, error) {
@@ -177,8 +200,61 @@ func (clt Client) hasResources() (bool, error) {
     return true, nil
 }
 
-func (clt Client) ReceiveDeviceInfo(message string) {
+// Receives information about the client mobile device, network, and location.
+// message: json containing the device, network, and location information
+// Returns any errors
+func (clt Client) ReceiveMobileStats(message string) error {
+    fmt.Println("MOBILE STATS", message)
+    var mobileStatsData map[string]interface{}
+    err := json.Unmarshal([]byte(message), &mobileStatsData)
+    if err != nil {
+        return err
+    }
 
+    locationInfo, ok := mobileStatsData["locationInfo"].(map[string]interface{})
+    if !ok {
+        return fmt.Errorf("No 'locationInfo' key in mobile stats JSON, or value is not a dictionary.")
+    }
+    latStr, ok := locationInfo["latitude"].(string)
+    if !ok {
+        return fmt.Errorf("No 'latitude' key in mobile stats JSON, or value is not a string.")
+    }
+    longStr, ok := locationInfo["longitude"].(string)
+    if !ok {
+        return fmt.Errorf("No 'longitude' key in mobile stats JSON, or value is not a string.")
+    }
+    // if location is given, do reverse geocode lookup and get local time
+    if latStr != "nil" && longStr != "nil" && latStr != "0.0" && longStr != "0.0" {
+        lat, err := strconv.ParseFloat(latStr, 64)
+        if err != nil {
+            return err
+        }
+        long, err := strconv.ParseFloat(longStr, 64)
+        if err != nil {
+            return err
+        }
+        lat = math.Round(lat * 10) / 10
+        long = math.Round(long * 10) / 10
+        // get city and country of client
+        loc, err := reverseGeoDB.ReverseGeocode([]float64{long, lat}) // not a bug, it is long,lat
+        if err != nil {
+            return err
+        }
+        locationInfo["country"] = loc.Country
+        locationInfo["city"] = loc.City
+        locationInfo["latitude"] = lat
+        locationInfo["longitude"] = long
+
+        // get local time of client
+        timeZone, err := time.LoadLocation(timeZoneDB.GetTimezoneName(long, lat))
+        if err != nil {
+            return err
+        }
+        locationInfo["localTime"] = clt.StartTime.In(timeZone).Format("2006-01-02 15:04:05-0700")
+    }
+    fmt.Printf("mobile stats: %v", mobileStatsData)
+    //TODO: figure out what to do with mobile stats once it is processed
+    return nil
 }
 
 func (clt Client) CleanUp(connectedClientIPs *ConnectedClients) {

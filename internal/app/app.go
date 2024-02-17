@@ -6,6 +6,7 @@ import (
     "fmt"
     "os"
 
+    "wehe-server/internal/clienthandler"
     "wehe-server/internal/config"
     "wehe-server/internal/network"
 )
@@ -24,6 +25,11 @@ func Run(cfg config.Config) error {
         return err
     }
     portNumbers, err := getTestPorts(cfg.PortNumbersFile)
+    if err != nil {
+        return err
+    }
+
+    err = clienthandler.InitGeoDB()
     if err != nil {
         return err
     }

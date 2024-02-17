@@ -7,6 +7,7 @@ import (
     "net"
     "strconv"
     "strings"
+    "time"
 
     "wehe-server/internal/clienthandler"
 )
@@ -26,8 +27,7 @@ type responseCode byte // code representing the status of a response back to the
 
 const (
     okResponse responseCode = iota
-    clientInputError
-    serverError
+    errorResponse
 )
 
 // Channel that allows client to notify server which replay it would like to run in addition to
@@ -109,14 +109,19 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
                 return
             }
             opcode := buffer[0]
+            message := string(buffer[1:n])
             fmt.Println("Got opcode:", opcode)
             switch opcode {
             case byte(ask4permission):
                 sideChannel.ask4Permission(clt)
             case byte(mobileStats):
-                sideChannel.receiveMobileStats(clt, buffer[:n])
+                err = sideChannel.receiveMobileStats(clt, message)
             default:
-                sideChannel.handleSideChannelError(fmt.Errorf("Unknown side channel opcode: %d\n", opcode), clt)
+                err = fmt.Errorf("Unknown side channel opcode: %d\n", opcode)
+            }
+            if err != nil {
+                sideChannel.handleSideChannelError(err, clt)
+                return
             }
         }
     }
@@ -134,7 +139,6 @@ func (sideChannel SideChannel) sendResponse(clt clienthandler.Client, respCode r
 
     clt.Conn.Write(resp)
 }
-
 
 // Handles errors thrown by a side channel connection.
 // err: the error that was thrown
@@ -227,6 +231,7 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, e
         IsLastReplay: isLastReplay,
         PublicIP: publicIP,
         ClientVersion: clientVersion,
+        StartTime: time.Now().UTC(),
     }
 
     fmt.Println(clt)
@@ -274,6 +279,15 @@ func (sideChannel SideChannel) ask4Permission(clt clienthandler.Client) {
     sideChannel.sendResponse(clt, okResponse, resp)
 }
 
-func (sideChannel SideChannel) receiveMobileStats(clt clienthandler.Client, buffer []byte) {
-    //stats, err := clt.ReceiveMobileStats(clt, message)
+// Receives device, network, and location information about the client.
+// clt: the client handler that made the request
+// message: json information about the client
+func (sideChannel SideChannel) receiveMobileStats(clt clienthandler.Client, message string) error {
+    err := clt.ReceiveMobileStats(message)
+    if err != nil {
+        sideChannel.sendResponse(clt, errorResponse, "")
+        return err
+    }
+    sideChannel.sendResponse(clt, okResponse, "")
+    return nil
 }
