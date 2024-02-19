@@ -29,6 +29,8 @@ func Run(cfg config.Config) error {
         return err
     }
 
+    os.MkdirAll(cfg.ResultsDir, 0755)
+
     err = geolocation.Init()
     if err != nil {
         return err
