@@ -1,4 +1,5 @@
 // Handles the logic for receiving and responding to client requests.
+// TODO: implement timeout for client so that connection doesn't keep running forever in the event that client crashes
 package clienthandler
 
 import (
@@ -11,7 +12,6 @@ import (
     "sync"
     "time"
 
-    "github.com/shirou/gopsutil/v3/cpu"
     "github.com/shirou/gopsutil/v3/disk"
     "github.com/shirou/gopsutil/v3/mem"
     psutilnet "github.com/shirou/gopsutil/v3/net"
@@ -130,53 +130,40 @@ func (clt Client) replayExists(replayNames []string) bool {
     return false
 }
 
-// Determines if the server has enough resources to run the replay.
-// Returns false if cpu > 95% or memory > 95% or disk > 95% or network upload > 2000 Mbps; true
+// Determines if the server has enough resources to run the replay. Don't deny permission if
+// resources can't be retrieved.
+// Returns false if memory > 95% or disk > 95% or network upload > 2000 Mbps; true
 //    otherwise or any errors
 func (clt Client) hasResources() (bool, error) {
-    // TODO: old server doesn't actually use cpu for check
-    cpuUsage, err := cpu.Percent(time.Second, false)
-    if err != nil {
-        return false, err
-    }
-    fmt.Println("cpu:", cpuUsage[0])
-    if cpuUsage[0] > 95 {
-        return false, nil
-    }
-
     memUsage, err := mem.VirtualMemory()
-    if err != nil {
-        return false, err
-    }
-    fmt.Println("mem:", memUsage.UsedPercent)
-    if memUsage.UsedPercent > 95 {
-        return false, nil
+    if err == nil {
+        fmt.Println("mem:", memUsage.UsedPercent)
+        if memUsage.UsedPercent > 95 {
+            return false, nil
+        }
     }
 
     diskUsage, err := disk.Usage("/")
-    if err != nil {
-        return false, err
-    }
-    fmt.Println("disk:", diskUsage.UsedPercent)
-    if diskUsage.UsedPercent > 95 {
-        return false, nil
+    if err == nil {
+        fmt.Println("disk:", diskUsage.UsedPercent)
+        if diskUsage.UsedPercent > 95 {
+            return false, nil
+        }
     }
 
     netUsage, err := psutilnet.IOCounters(false)
-    if err != nil {
-        return false, err
-    }
-    bytesSent0 := netUsage[0].BytesSent
-    time.Sleep(1 * time.Second)
-    netUsage, err = psutilnet.IOCounters(false)
-    if err != nil {
-        return false, err
-    }
-    bytesSent1 := netUsage[0].BytesSent
-    uploadMbps := float64((bytesSent1 - bytesSent0) * 8) / 1000000.0
-    fmt.Println("net:", uploadMbps)
-    if uploadMbps > 2000 {
-        return false, err
+    if err == nil {
+        bytesSent0 := netUsage[0].BytesSent
+        time.Sleep(1 * time.Second)
+        netUsage, err = psutilnet.IOCounters(false)
+        if err == nil {
+            bytesSent1 := netUsage[0].BytesSent
+            uploadMbps := float64((bytesSent1 - bytesSent0) * 8) / 1000000.0
+            fmt.Println("net:", uploadMbps)
+            if uploadMbps > 2000 {
+                return false, nil
+            }
+        }
     }
 
     return true, nil
