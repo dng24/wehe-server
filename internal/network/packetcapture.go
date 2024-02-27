@@ -1,4 +1,6 @@
 // Does packet captures.
+// TODO: after implementing tests, fix packet capture to tcpdump filters by port, then editcap truncates the payload while preserving everything in the headers, and then tcprewrite updates the client IP/checksum
+// https://github.com/NEU-SNS/wehe-py3/blob/master/src/python_lib.py#L653
 package network
 
 import (
