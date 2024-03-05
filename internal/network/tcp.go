@@ -67,6 +67,7 @@ func (tcpServer TCPServer) handleConnection(conn net.Conn) {
     }
     clientIP := addr.IP.String()
 
+    // TODO: probably should compare bytes instead of converting to string
     // return client IP address if it asks for it
     if strings.HasPrefix(string(buffer), "GET /WHATSMYIPMAN") || string(buffer) == "WHATSMYIPMAN" {
         _, err = conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n" + clientIP))
