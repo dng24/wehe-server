@@ -38,33 +38,55 @@ const (
 )
 
 type ConnectedClients struct {
-    clientIPs map[string]struct{} // set of all currently connected client IPs
+    clientIPs map[string]string // map of all currently connected client IPs to the replay they want to run
     mutex sync.Mutex // prevents multiple goroutines from accessing ClientIPs
 }
 
 func NewConnectedClients() *ConnectedClients {
     return &ConnectedClients{
-        clientIPs: make(map[string]struct{}),
+        clientIPs: make(map[string]string),
     }
 }
 
-func (connectedClients *ConnectedClients) hasKey(key string) bool {
+// Checks if client is currently running a replay.
+// ip: IP of the client
+// Returns true if client is running a replay; false otherwise
+func (connectedClients *ConnectedClients) Has(ip string) bool {
     connectedClients.mutex.Lock()
     defer connectedClients.mutex.Unlock()
-    _, exists := connectedClients.clientIPs[key]
+    _, exists := connectedClients.clientIPs[ip]
     return exists
 }
 
-func (connectedClients *ConnectedClients) addKey(key string) {
+// Gets the replay name that a connected client is currently running.
+// ip: IP of the client
+// Returns the replay name of the client with the given IP or any errors
+func (connectedClients *ConnectedClients) Get(ip string) (string, error) {
     connectedClients.mutex.Lock()
     defer connectedClients.mutex.Unlock()
-    connectedClients.clientIPs[key] = struct{}{}
+    replayName, exists := connectedClients.clientIPs[ip]
+    if exists {
+        return replayName, nil
+    } else {
+        return "", fmt.Errorf("%s is not currently running a replay.\n", ip)
+    }
 }
 
-func (connectedClients *ConnectedClients) deleteKey(key string) {
+// Adds a client with it starts a replay.
+// ip: the IP of the client
+// replayName: the name of the replay that the client would like to run
+func (connectedClients *ConnectedClients) add(ip string, replayName string) {
     connectedClients.mutex.Lock()
     defer connectedClients.mutex.Unlock()
-    delete(connectedClients.clientIPs, key)
+    connectedClients.clientIPs[ip] = replayName
+}
+
+// Removes a client.
+// ip: the IP of the client to remove
+func (connectedClients *ConnectedClients) del(ip string) {
+    connectedClients.mutex.Lock()
+    defer connectedClients.mutex.Unlock()
+    delete(connectedClients.clientIPs, ip)
 }
 
 type Client struct {
@@ -101,7 +123,7 @@ func (clt Client) Ask4Permission(replayNames []string, connectedClientIPs *Conne
     }
 
     // We allow only one client per IP at a time because multiple clients on an IP might affect throughputs
-    if connectedClientIPs.hasKey(clt.PublicIP) {
+    if connectedClientIPs.Has(clt.PublicIP) {
         return ask4PermissionErrorStatus, ask4PermissionIPInUseMsg
     }
 
@@ -113,8 +135,7 @@ func (clt Client) Ask4Permission(replayNames []string, connectedClientIPs *Conne
     if !hasResources {
         return ask4PermissionErrorStatus, ask4PermissionLowResourcesMsg
     }
-
-    connectedClientIPs.addKey(clt.PublicIP)
+    connectedClientIPs.add(clt.PublicIP, clt.ReplayName)
     return ask4PermissionOkStatus, strconv.Itoa(samplesPerReplay)
 }
 
@@ -226,5 +247,5 @@ func (clt Client) ReceiveMobileStats(message string) error {
 
 func (clt Client) CleanUp(connectedClientIPs *ConnectedClients) {
     fmt.Println("Cleaning up connection to", clt.PublicIP)
-    connectedClientIPs.deleteKey(clt.PublicIP)
+    connectedClientIPs.del(clt.PublicIP)
 }

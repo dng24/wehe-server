@@ -267,7 +267,6 @@ func getClientPublicIP(conn net.Conn) (string, error) {
     if ip == nil {
         return "", fmt.Errorf("invalid IP address: %s", host)
     }
-
     return ip.String(), nil
 }
 

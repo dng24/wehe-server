@@ -7,7 +7,8 @@ import (
     "strings"
     "time"
 
-    "wehe-server/internal/replay"
+    "wehe-server/internal/clienthandler"
+    "wehe-server/internal/testdata"
 )
 
 const (
@@ -17,13 +18,16 @@ const (
 type UDPServer struct {
     IP string // IP that the server should listen on
     Port int // UDP port that the server should listen on
-    ConnectedIPs map[string]struct{} // set of IPs of the connected clients
+    ConnectedIPs map[string]struct{} // set of IPs of the connected clients TODO: does this need mutex??? probably
+    IPReplayNameMapping *clienthandler.ConnectedClients // map of client IPs that are connected to the side channel to the replay name client wants to run
 }
 
-func NewUDPServer(ip string, port int) UDPServer {
+func NewUDPServer(ip string, port int, ipReplayNameMapping *clienthandler.ConnectedClients) UDPServer {
     return UDPServer{
         IP: ip,
         Port: port,
+        ConnectedIPs: make(map[string]struct{}),
+        IPReplayNameMapping: ipReplayNameMapping,
     }
 }
 
@@ -42,20 +46,14 @@ func (udpServer UDPServer) StartServer(errChan chan<- error) {
     for {
          buffer := make([]byte, 4096)
 
-        _, addr, err := conn.ReadFrom(buffer)
+        numBytes, addr, err := conn.ReadFrom(buffer)
         if err != nil {
             //TODO: should handle failed test instead of terminating program
             errChan <- err
             return
         }
 
-        errChan2 := make(chan error)
-        go udpServer.handleConnection(conn, addr, buffer, errChan2)
-        err = <-errChan2
-        if err != nil {
-            errChan <- err
-            return
-        }
+        go udpServer.handleConnection(conn, addr, buffer[:numBytes])
     }
 
     errChan <- nil
@@ -65,8 +63,7 @@ func (udpServer UDPServer) StartServer(errChan chan<- error) {
 // conn: the UDP connection
 // addr: the client IP and port
 // buffer: the content received from the client
-// errChan: channel to send back any errors
-func (udpServer UDPServer) handleConnection(conn net.PacketConn, addr net.Addr, buffer []byte, errChan chan<- error) {
+func (udpServer UDPServer) handleConnection(conn net.PacketConn, addr net.Addr, buffer []byte) {
     //TODO: figure this out https://github.com/NEU-SNS/wehe-py3/blob/master/src/replay_server.py#L324
 
     clientIP := strings.Split(addr.String(), ":")[0]
@@ -75,24 +72,43 @@ func (udpServer UDPServer) handleConnection(conn net.PacketConn, addr net.Addr, 
     if strings.HasPrefix(string(buffer), "WHATSMYIPMAN") {
         _, err := conn.WriteTo([]byte(clientIP), addr)
         if err != nil {
-            errChan <- err
+            udpServer.handleUDPError(err)
             return
         }
-//        errChan <- nil
-//        return
+        return
     }
 
     _, exists := udpServer.ConnectedIPs[clientIP]
     if !exists {
-        packets := make([]replay.Packet, 0)
-        err := udpServer.sendPackets(conn, addr, packets, time.Now(), true) //TODO fix timing once replay files are read in
+        udpServer.ConnectedIPs[clientIP] = struct{}{}
+        defer delete(udpServer.ConnectedIPs, clientIP)
+
+        replayName, err := udpServer.IPReplayNameMapping.Get(clientIP)
         if err != nil {
-            errChan <- err
+            udpServer.handleUDPError(err)
             return
         }
-    }
 
-    errChan <- nil
+        // TODO: optimize so that replays can stay in ram for more than 1 client
+        replayInfo, err := testdata.ParseReplayJSON(replayName)
+        if err != nil {
+            udpServer.handleUDPError(err)
+            return
+        }
+        udpServer.sendPackets(conn, addr, clientIP, replayInfo.Packets, time.Now(), true) //TODO fix timing once replay files are read in
+        if err != nil {
+            udpServer.handleUDPError(err)
+            return
+        }
+    } else {
+        fmt.Printf("Received %d bytes from client.\n", len(buffer))
+    }
+}
+
+// Handles errors thrown by a UDP connection.
+// err: the error that was thrown
+func (udpServer UDPServer) handleUDPError(err error) {
+    fmt.Println("UDP conection error:", err)
 }
 
 // Sends UDP packets to the client.
@@ -100,10 +116,16 @@ func (udpServer UDPServer) handleConnection(conn net.PacketConn, addr net.Addr, 
 // addr: the client IP and port
 // packets: the packets to send to the client
 // startTime: the start time of the replay (time when first packet received from client)
-// timing: true if packets should be sent at their timestamp; false otherwise
+// timing: true if packets should be sent at their timestamps; false otherwise
 // Returns any errors
-func (udpServer UDPServer) sendPackets(conn net.PacketConn, addr net.Addr, packets []replay.Packet, startTime time.Time, timing bool) error {
-    for _, packet := range packets {
+func (udpServer UDPServer) sendPackets(conn net.PacketConn, addr net.Addr, clientIP string, packets []testdata.Packet, startTime time.Time, timing bool) error {
+    packetLen := len(packets)
+    for i, p := range packets {
+        // check to make sure client is still connected to server before continuing
+        if !udpServer.IPReplayNameMapping.Has(clientIP) {
+            break
+        }
+        packet := p.(testdata.UDPPacket)
         // replays stop after a certain amount of time so that user doesn't have to wait too long
         elapsedTime := time.Now().Sub(startTime)
         if elapsedTime > udpReplayTimeout {
@@ -115,6 +137,7 @@ func (udpServer UDPServer) sendPackets(conn net.PacketConn, addr net.Addr, packe
             time.Sleep(startTime.Add(packet.Timestamp).Sub(time.Now()))
         }
 
+        fmt.Printf("Sending packet %d/%d at %s\n", i + 1, packetLen, packet.Timestamp)
         _, err := conn.WriteTo(packet.Payload, addr)
         if err != nil {
             return err

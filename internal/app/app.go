@@ -36,28 +36,28 @@ func Run(cfg config.Config) error {
         return err
     }
 
+    errChan := make(chan error)
+    sideChannel := network.NewSideChannel("0.0.0.0", replayNames)
+    go sideChannel.StartServer(errChan)
+
     // TODO: revisit this comment - will we still use WHATSMYIPMAN? will it be on a separate port?
     // for backwards compatibility, we open all TCP and UDP replay ports needed to run all tests
     // during server initialization since clients v3.7.4 and older will make a request to the test
     // port to get its public IP (WHATSMYIPMAN) before it connects to the side channel, so we don't
     // know when client will make a request to a test port
-    errChan := make(chan error)
     var tcpServers []network.TCPServer
     var udpServers []network.UDPServer
     for _, port := range portNumbers.TCPPorts {
-        tcpServer := network.NewTCPServer("0.0.0.0", port)
+        tcpServer := network.NewTCPServer("0.0.0.0", port, sideChannel.ConnectedClients)
         go tcpServer.StartServer(errChan)
         tcpServers = append(tcpServers, tcpServer)
     }
 
     for _, port := range portNumbers.UDPPorts {
-        udpServer := network.NewUDPServer("0.0.0.0", port)
+        udpServer := network.NewUDPServer("0.0.0.0", port, sideChannel.ConnectedClients)
         go udpServer.StartServer(errChan)
         udpServers = append(udpServers, udpServer)
     }
-
-    sideChannel := network.NewSideChannel("0.0.0.0", replayNames)
-    go sideChannel.StartServer(errChan)
 
     err = <-errChan
     if err != nil {

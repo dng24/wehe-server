@@ -6,17 +6,22 @@ import (
     "fmt"
     "net"
     "strings"
+
+    "wehe-server/internal/clienthandler"
 )
 
 type TCPServer struct {
     IP string // IP that the server should listen on
     Port int // TCP port that the server should listen on
+    ConnectedIPs map[string]struct{} // set of IPs of the connected clients
+    IPReplayNameMapping *clienthandler.ConnectedClients // map of client IPs that are connected to the side channel to the replay name client wants to run
 }
 
-func NewTCPServer(ip string, port int) TCPServer {
+func NewTCPServer(ip string, port int, ipReplayNameMapping *clienthandler.ConnectedClients) TCPServer {
     return TCPServer{
         IP: ip,
         Port: port,
+        IPReplayNameMapping: ipReplayNameMapping,
     }
 }
 
