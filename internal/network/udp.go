@@ -73,7 +73,6 @@ func (udpServer UDPServer) handleConnection(conn net.PacketConn, addr net.Addr, 
         _, err := conn.WriteTo([]byte(clientIP), addr)
         if err != nil {
             udpServer.handleUDPError(err)
-            return
         }
         return
     }
@@ -95,7 +94,7 @@ func (udpServer UDPServer) handleConnection(conn net.PacketConn, addr net.Addr, 
             udpServer.handleUDPError(err)
             return
         }
-        udpServer.sendPackets(conn, addr, clientIP, replayInfo.Packets, time.Now(), true) //TODO fix timing once replay files are read in
+        err = udpServer.sendPackets(conn, addr, clientIP, replayInfo.Responses, time.Now(), true) //TODO fix timing once replay files are read in
         if err != nil {
             udpServer.handleUDPError(err)
             return
@@ -118,7 +117,7 @@ func (udpServer UDPServer) handleUDPError(err error) {
 // startTime: the start time of the replay (time when first packet received from client)
 // timing: true if packets should be sent at their timestamps; false otherwise
 // Returns any errors
-func (udpServer UDPServer) sendPackets(conn net.PacketConn, addr net.Addr, clientIP string, packets []testdata.Packet, startTime time.Time, timing bool) error {
+func (udpServer UDPServer) sendPackets(conn net.PacketConn, addr net.Addr, clientIP string, packets []testdata.Response, startTime time.Time, timing bool) error {
     packetLen := len(packets)
     for i, p := range packets {
         // check to make sure client is still connected to server before continuing
