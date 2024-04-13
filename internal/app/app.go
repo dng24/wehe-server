@@ -29,15 +29,13 @@ func Run(cfg config.Config) error {
         return err
     }
 
-    os.MkdirAll(cfg.ResultsDir, 0755)
-
     err = geolocation.Init()
     if err != nil {
         return err
     }
 
     errChan := make(chan error)
-    sideChannel := network.NewSideChannel("0.0.0.0", replayNames)
+    sideChannel := network.NewSideChannel("0.0.0.0", replayNames, cfg.ResultsDir)
     go sideChannel.StartServer(errChan)
 
     // TODO: revisit this comment - will we still use WHATSMYIPMAN? will it be on a separate port?

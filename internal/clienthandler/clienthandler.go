@@ -7,6 +7,8 @@ import (
     "fmt"
     "math"
     "net"
+    "os"
+    "path/filepath"
     "strconv"
     "strings"
     "sync"
@@ -245,7 +247,54 @@ func (clt Client) ReceiveMobileStats(message string) error {
     return nil
 }
 
+// Receives the duration of the replay, throughputs, and the sample times after a replay has been
+// run.
+// message: the data that has been received from the client
+// resultsDir: the root directory of the results to place the throughputs in
+// Returns any errors
+func (clt Client) ReceiveThroughputs(message string, resultsDir string) error {
+    // format: <replayDuration>;<[[throughputs],[sampleTimes]]
+    data := strings.Split(message, ";")
+    if len(data) < 2 {
+        return fmt.Errorf("Received improperly formatted throughput data: %s\n", message)
+    }
+    replayDurationFloat, err := strconv.ParseFloat(data[0], 64)
+    if err != nil {
+        return err
+    }
+    replayDuration := replayDurationFloat * float64(time.Second)
+    fmt.Println("DEBUG replay duration", replayDuration)
+
+    // write the throughputs and sample times to file
+    throughputDir := filepath.Join(resultsDir, clt.UserID, "clientXputs")
+    filename := "Xput_" + clt.UserID + "_" + strconv.Itoa(clt.TestID) + "_" + strconv.Itoa(int(clt.ReplayID)) + ".json"
+    throughputsAndSampleTimes := data[1]
+    err = writeToFile(throughputDir, filename, throughputsAndSampleTimes)
+    return nil
+}
+
 func (clt Client) CleanUp(connectedClientIPs *ConnectedClients) {
     fmt.Println("Cleaning up connection to", clt.PublicIP)
     connectedClientIPs.del(clt.PublicIP)
+}
+
+// Write contents to a file. Any missing directories will be created.
+// parentDir: the parent directory of the file
+// filename: the name of the file
+// contents: the contents of the file to write
+func writeToFile(parentDir string, filename string, contents string) error {
+    if err := os.MkdirAll(parentDir, 0755); err != nil {
+        return err
+    }
+
+    file, err := os.Create(filepath.Join(parentDir, filename))
+    if err != nil {
+        return err
+    }
+    defer file.Close()
+
+    if _, err := file.WriteString(contents); err != nil {
+        return err
+    }
+    return nil
 }

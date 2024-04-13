@@ -21,6 +21,7 @@ type opcode byte // request type from the client
 const (
     ask4permission opcode = iota
     mobileStats
+    throughputs
 )
 
 type responseCode byte // code representing the status of a response back to the client
@@ -37,14 +38,16 @@ type SideChannel struct {
     Port int // TCP port server should listen on
     ReplayNames []string // names of all the replays
     ConnectedClients *clienthandler.ConnectedClients // connected clients to the side channel
+    ResultsDir string
 }
 
-func NewSideChannel(ip string, replayNames []string) SideChannel {
+func NewSideChannel(ip string, replayNames []string, resultsDir string) SideChannel {
     return SideChannel{
         IP: ip,
         Port: port,
         ReplayNames: replayNames,
         ConnectedClients: clienthandler.NewConnectedClients(),
+        ResultsDir: resultsDir,
     }
 }
 
@@ -102,7 +105,7 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
         }
     } else {
         for {
-            buffer := make([]byte, 1024)
+            buffer := make([]byte, 4096)
             n, err := conn.Read(buffer)
             if err != nil {
                 sideChannel.handleSideChannelError(err, clt)
@@ -116,6 +119,8 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
                 sideChannel.ask4Permission(clt)
             case byte(mobileStats):
                 err = sideChannel.receiveMobileStats(clt, message)
+            case byte(throughputs):
+                err = sideChannel.receiveThroughputs(clt, message)
             default:
                 err = fmt.Errorf("Unknown side channel opcode: %d\n", opcode)
             }
@@ -281,8 +286,23 @@ func (sideChannel SideChannel) ask4Permission(clt clienthandler.Client) {
 // Receives device, network, and location information about the client.
 // clt: the client handler that made the request
 // message: json information about the client
+// Returns any errors
 func (sideChannel SideChannel) receiveMobileStats(clt clienthandler.Client, message string) error {
     err := clt.ReceiveMobileStats(message)
+    if err != nil {
+        sideChannel.sendResponse(clt, errorResponse, "")
+        return err
+    }
+    sideChannel.sendResponse(clt, okResponse, "")
+    return nil
+}
+
+// Receives replay duration, the throughputs, and sample times from a replay.
+// clt: the client handler that made the request
+// message: the data received from the client
+// Returns any errors
+func (sideChannel SideChannel) receiveThroughputs(clt clienthandler.Client, message string) error {
+    err := clt.ReceiveThroughputs(message, sideChannel.ResultsDir)
     if err != nil {
         sideChannel.sendResponse(clt, errorResponse, "")
         return err
