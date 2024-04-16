@@ -4,6 +4,7 @@ package network
 
 import (
     "fmt"
+    "encoding/binary"
     "io"
     "net"
     "strconv"
@@ -107,8 +108,7 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
         }
     } else {
         for {
-            buffer := make([]byte, 4096)
-            n, err := conn.Read(buffer)
+            buffer, err := sideChannel.readRequest(conn)
             if err != nil {
                 if err != io.EOF {
                     sideChannel.handleSideChannelError(err, clt)
@@ -116,11 +116,11 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
                 return
             }
             opcode := buffer[0]
-            message := string(buffer[1:n])
+            message := string(buffer[1:len(buffer)])
             fmt.Println("Got opcode:", opcode)
             switch opcode {
             case byte(ask4permission):
-                sideChannel.ask4Permission(clt)
+                err = sideChannel.ask4Permission(clt)
             case byte(mobileStats):
                 err = sideChannel.receiveMobileStats(clt, message)
             case byte(throughputs):
@@ -136,17 +136,55 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
     }
 }
 
+// Reads a request from the client. First, a 32 bit, little endian unsigned message length is read.
+// Using this length, the acutal message is then read.
+// conn: the connection to the client
+// Returns the message read and any errors
+func (sideChannel SideChannel) readRequest(conn net.Conn) ([]byte, error) {
+    // get size of message
+    dataLengthBytes := make([]byte, 4)
+    _, err := conn.Read(dataLengthBytes)
+    if err != nil {
+        return nil, err
+    }
+    dataLength := binary.LittleEndian.Uint32(dataLengthBytes)
+
+    // get the message
+    buffer := make([]byte, dataLength)
+    n, err := conn.Read(buffer)
+    if err != nil {
+        return nil, err
+    }
+    return buffer[:n], nil
+}
+
 // Sends a response back to the client.
 // clt: the client
 // respCode: the status of the response
 // message: the information to return the to client
-func (sideChannel SideChannel) sendResponse(clt clienthandler.Client, respCode responseCode, message string) {
+// Returns any errors
+func (sideChannel SideChannel) sendResponse(clt clienthandler.Client, respCode responseCode, message string) error {
     messageBytes := []byte(message)
-    resp := make([]byte, len(messageBytes) + 1)
+    messageLength := len(messageBytes) + 1
+
+    // send size of message
+    messageLengthBytes := make([]byte, 4)
+    binary.LittleEndian.PutUint32(messageLengthBytes, uint32(messageLength))
+    _, err := clt.Conn.Write(messageLengthBytes)
+    if err != nil {
+        return err
+    }
+
+    // send the message
+    resp := make([]byte, messageLength)
     resp[0] = byte(respCode)
     copy(resp[1:], messageBytes)
 
-    clt.Conn.Write(resp)
+    _, err = clt.Conn.Write(resp)
+    if err != nil {
+        return err
+    }
+    return nil
 }
 
 // Handles errors thrown by a side channel connection.
@@ -182,8 +220,7 @@ func getMessage(buffer []byte, n int) (string, error) {
 // conn: the connection to the client
 // Returns a information about the client or any errors
 func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, error) {
-    buffer := make([]byte, 1024)
-    _, err := conn.Read(buffer)
+    buffer, err := sideChannel.readRequest(conn)
     if err != nil {
         return clienthandler.Client{}, err
     }
@@ -288,10 +325,15 @@ func getClientPublicIP(conn net.Conn) (string, error) {
 
 // Determines if client can run replay and seriailzes the response to send back to the client.
 // clt: the client handler that made the request
-func (sideChannel SideChannel) ask4Permission(clt clienthandler.Client) {
+// Returns any errors
+func (sideChannel SideChannel) ask4Permission(clt clienthandler.Client) error {
     status, info := clt.Ask4Permission(sideChannel.ReplayNames, sideChannel.ConnectedClients)
     resp := status + ";" + info
-    sideChannel.sendResponse(clt, okResponse, resp)
+    err := sideChannel.sendResponse(clt, okResponse, resp)
+    if err != nil {
+        return err
+    }
+    return nil
 }
 
 // Receives device, network, and location information about the client.
@@ -304,7 +346,10 @@ func (sideChannel SideChannel) receiveMobileStats(clt clienthandler.Client, mess
         sideChannel.sendResponse(clt, errorResponse, "")
         return err
     }
-    sideChannel.sendResponse(clt, okResponse, "")
+    err = sideChannel.sendResponse(clt, okResponse, "")
+    if err != nil {
+        return err
+    }
     return nil
 }
 
@@ -318,6 +363,9 @@ func (sideChannel SideChannel) receiveThroughputs(clt clienthandler.Client, mess
         sideChannel.sendResponse(clt, errorResponse, "")
         return err
     }
-    sideChannel.sendResponse(clt, okResponse, "")
+    err = sideChannel.sendResponse(clt, okResponse, "")
+    if err != nil {
+        return err
+    }
     return nil
 }
