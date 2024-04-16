@@ -4,6 +4,7 @@ package network
 
 import (
     "fmt"
+    "io"
     "net"
     "strconv"
     "strings"
@@ -77,18 +78,19 @@ func (sideChannel SideChannel) StartServer(errChan chan<- error) {
 
     errChan <- nil
 }
-
+//
 // Handles a side channel connection from a clienthandler.
 // conn: the client side channel connection
 // errChan: the error channel to return any errors
 func (sideChannel SideChannel) handleConnection(conn net.Conn) {
-    defer conn.Close()
-
     clt, err := sideChannel.receiveID(conn)
     if err != nil {
         sideChannel.handleSideChannelError(err, clienthandler.Client{})
+        conn.Close()
         return
     }
+
+    defer sideChannel.CloseConnection(conn, clt)
 
     majorVersion, err := clt.GetMajorVersionNumber()
     if err != nil {
@@ -108,7 +110,9 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
             buffer := make([]byte, 4096)
             n, err := conn.Read(buffer)
             if err != nil {
-                sideChannel.handleSideChannelError(err, clt)
+                if err != io.EOF {
+                    sideChannel.handleSideChannelError(err, clt)
+                }
                 return
             }
             opcode := buffer[0]
@@ -150,6 +154,13 @@ func (sideChannel SideChannel) sendResponse(clt clienthandler.Client, respCode r
 // clt: the client handler of the connection that errored
 func (sideChannel SideChannel) handleSideChannelError(err error, clt clienthandler.Client) {
     fmt.Println("Side channel error:", err)
+}
+
+// Perform tasks to clean up side channel connection.
+// conn: the client connection
+// clt: the client handler of the connection
+func (sideChannel SideChannel) CloseConnection(conn net.Conn, clt clienthandler.Client) {
+    conn.Close()
     clt.CleanUp(sideChannel.ConnectedClients)
 }
 

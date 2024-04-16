@@ -90,7 +90,6 @@ func (connectedClients *ConnectedClients) del(ip string) {
     defer connectedClients.mutex.Unlock()
     delete(connectedClients.clientIPs, ip)
 }
-
 type Client struct {
     Conn net.Conn // the connection to the client
     UserID string // the 10 character user ID
