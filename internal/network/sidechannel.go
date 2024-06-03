@@ -11,6 +11,8 @@ import (
     "strings"
     "time"
 
+    "github.com/m-lab/uuid"
+
     "wehe-server/internal/clienthandler"
 )
 
@@ -24,6 +26,7 @@ const (
     ask4permission opcode = iota
     mobileStats
     throughputs
+    analyzeTest
 )
 
 type responseCode byte // code representing the status of a response back to the client
@@ -40,15 +43,17 @@ type SideChannel struct {
     Port int // TCP port server should listen on
     ReplayNames []string // names of all the replays
     ConnectedClients *clienthandler.ConnectedClients // connected clients to the side channel
-    ResultsDir string
+    TmpResultsDir string // the directory to write temporary files to
+    ResultsDir string // the directory to write permanent results to
 }
 
-func NewSideChannel(ip string, replayNames []string, resultsDir string) SideChannel {
+func NewSideChannel(ip string, replayNames []string, tmpResultsDir string, resultsDir string) SideChannel {
     return SideChannel{
         IP: ip,
         Port: port,
         ReplayNames: replayNames,
         ConnectedClients: clienthandler.NewConnectedClients(),
+        TmpResultsDir: tmpResultsDir,
         ResultsDir: resultsDir,
     }
 }
@@ -86,7 +91,7 @@ func (sideChannel SideChannel) StartServer(errChan chan<- error) {
 func (sideChannel SideChannel) handleConnection(conn net.Conn) {
     clt, err := sideChannel.receiveID(conn)
     if err != nil {
-        sideChannel.handleSideChannelError(err, clienthandler.Client{})
+        sideChannel.handleSideChannelError(err, &clienthandler.Client{})
         conn.Close()
         return
     }
@@ -125,6 +130,11 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
                 err = sideChannel.receiveMobileStats(clt, message)
             case byte(throughputs):
                 err = sideChannel.receiveThroughputs(clt, message)
+                if err == nil {
+                    err = clt.WriteReplayInfoToFile(sideChannel.TmpResultsDir)
+                }
+            case byte(analyzeTest):
+                err = sideChannel.analyzeTest(clt, message)
             default:
                 err = fmt.Errorf("Unknown side channel opcode: %d\n", opcode)
             }
@@ -163,7 +173,7 @@ func (sideChannel SideChannel) readRequest(conn net.Conn) ([]byte, error) {
 // respCode: the status of the response
 // message: the information to return the to client
 // Returns any errors
-func (sideChannel SideChannel) sendResponse(clt clienthandler.Client, respCode responseCode, message string) error {
+func (sideChannel SideChannel) sendResponse(clt *clienthandler.Client, respCode responseCode, message string) error {
     messageBytes := []byte(message)
     messageLength := len(messageBytes) + 1
 
@@ -190,14 +200,14 @@ func (sideChannel SideChannel) sendResponse(clt clienthandler.Client, respCode r
 // Handles errors thrown by a side channel connection.
 // err: the error that was thrown
 // clt: the client handler of the connection that errored
-func (sideChannel SideChannel) handleSideChannelError(err error, clt clienthandler.Client) {
+func (sideChannel SideChannel) handleSideChannelError(err error, clt *clienthandler.Client) {
     fmt.Println("Side channel error:", err)
 }
 
 // Perform tasks to clean up side channel connection.
 // conn: the client connection
 // clt: the client handler of the connection
-func (sideChannel SideChannel) CloseConnection(conn net.Conn, clt clienthandler.Client) {
+func (sideChannel SideChannel) CloseConnection(conn net.Conn, clt *clienthandler.Client) {
     conn.Close()
     clt.CleanUp(sideChannel.ConnectedClients)
 }
@@ -219,22 +229,22 @@ func getMessage(buffer []byte, n int) (string, error) {
 // Receives the ID declare by the clienthandler.
 // conn: the connection to the client
 // Returns a information about the client or any errors
-func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, error) {
+func (sideChannel SideChannel) receiveID(conn net.Conn) (*clienthandler.Client, error) {
     buffer, err := sideChannel.readRequest(conn)
     if err != nil {
-        return clienthandler.Client{}, err
+        return &clienthandler.Client{}, err
     }
 
     pieces := strings.Split(string(buffer), ";")
     if len(pieces) < 6 {
-        return clienthandler.Client{}, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
+        return &clienthandler.Client{}, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
     }
 
     userID := pieces[0]
 
     replayIDInt, err := strconv.Atoi(pieces[1])
     if err != nil {
-        return clienthandler.Client{}, err
+        return &clienthandler.Client{}, err
     }
     var replayID clienthandler.ReplayType
     if replayIDInt == 0 {
@@ -242,7 +252,7 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, e
     } else if replayIDInt == 1 {
         replayID = clienthandler.Random
     } else {
-        return clienthandler.Client{}, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
+        return &clienthandler.Client{}, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
     }
 
     //TODO: change client replay files replay names to use _ instead of -, then delete this terrible replace code
@@ -251,11 +261,11 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, e
     extraString := pieces[3]
     testID, err := strconv.Atoi(pieces[4])
     if err != nil {
-        return clienthandler.Client{}, err
+        return &clienthandler.Client{}, err
     }
     isLastReplay, err := strToBool(pieces[5])
     if err != nil {
-        return clienthandler.Client{}, err
+        return &clienthandler.Client{}, err
     }
 
     // Some ISPs may give clients multiple IPs - one for each port. We want to use the test port
@@ -264,7 +274,7 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, e
     // then we just use the side channel IP of the clienthandler.
     publicIP, err := getClientPublicIP(conn)
     if err != nil {
-        return clienthandler.Client{}, err
+        return &clienthandler.Client{}, err
     }
     clientVersion := "1.0"
     if len(pieces) > 6 {
@@ -274,7 +284,17 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, e
         clientVersion = pieces[7]
     }
 
-    clt := clienthandler.Client{
+    // TODO: this should probably be at the source of the connection
+    tcpConn, ok := conn.(*net.TCPConn)
+    if !ok {
+        return &clienthandler.Client{}, fmt.Errorf("Side Channel expected to be TCP connection; it is not\n")
+    }
+    mlabUUID, err := uuid.FromTCPConn(tcpConn)
+    if err != nil {
+        return &clienthandler.Client{}, err
+    }
+
+    clt := &clienthandler.Client{
         Conn: conn,
         UserID: userID,
         ReplayID: replayID,
@@ -285,6 +305,8 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (clienthandler.Client, e
         PublicIP: publicIP,
         ClientVersion: clientVersion,
         StartTime: time.Now().UTC(),
+        Exceptions: "NoExp",
+        MLabUUID: mlabUUID,
     }
 
     fmt.Println(clt)
@@ -326,7 +348,7 @@ func getClientPublicIP(conn net.Conn) (string, error) {
 // Determines if client can run replay and seriailzes the response to send back to the client.
 // clt: the client handler that made the request
 // Returns any errors
-func (sideChannel SideChannel) ask4Permission(clt clienthandler.Client) error {
+func (sideChannel SideChannel) ask4Permission(clt *clienthandler.Client) error {
     status, info := clt.Ask4Permission(sideChannel.ReplayNames, sideChannel.ConnectedClients)
     resp := status + ";" + info
     err := sideChannel.sendResponse(clt, okResponse, resp)
@@ -340,7 +362,7 @@ func (sideChannel SideChannel) ask4Permission(clt clienthandler.Client) error {
 // clt: the client handler that made the request
 // message: json information about the client
 // Returns any errors
-func (sideChannel SideChannel) receiveMobileStats(clt clienthandler.Client, message string) error {
+func (sideChannel SideChannel) receiveMobileStats(clt *clienthandler.Client, message string) error {
     err := clt.ReceiveMobileStats(message)
     if err != nil {
         sideChannel.sendResponse(clt, errorResponse, "")
@@ -357,8 +379,21 @@ func (sideChannel SideChannel) receiveMobileStats(clt clienthandler.Client, mess
 // clt: the client handler that made the request
 // message: the data received from the client
 // Returns any errors
-func (sideChannel SideChannel) receiveThroughputs(clt clienthandler.Client, message string) error {
-    err := clt.ReceiveThroughputs(message, sideChannel.ResultsDir)
+func (sideChannel SideChannel) receiveThroughputs(clt *clienthandler.Client, message string) error {
+    err := clt.ReceiveThroughputs(message, sideChannel.TmpResultsDir)
+    if err != nil {
+        sideChannel.sendResponse(clt, errorResponse, "")
+        return err
+    }
+    err = sideChannel.sendResponse(clt, okResponse, "")
+    if err != nil {
+        return err
+    }
+    return nil
+}
+
+func (sideChannel SideChannel) analyzeTest(clt *clienthandler.Client, message string) error {
+    err := clt.AnalyzeTest(message)
     if err != nil {
         sideChannel.sendResponse(clt, errorResponse, "")
         return err

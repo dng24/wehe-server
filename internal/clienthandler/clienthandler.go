@@ -90,6 +90,8 @@ func (connectedClients *ConnectedClients) del(ip string) {
     defer connectedClients.mutex.Unlock()
     delete(connectedClients.clientIPs, ip)
 }
+
+//TODO: refactor to have a constructor
 type Client struct {
     Conn net.Conn // the connection to the client
     UserID string // the 10 character user ID
@@ -100,10 +102,14 @@ type Client struct {
     IsLastReplay bool // true if this is the last replay of the test; false otherwise
     PublicIP string // public IP of the client retrieved from the test port
     ClientVersion string // client version number of Wehe
+    MobileStats map[string]interface{} // information about the client device
     StartTime time.Time // time when side channel connection was made
+    Exceptions string // any errors that occurred while running a replay
+    ReplayDuration time.Duration // time it took to run the replay
+    MLabUUID string // globally unique ID for M-Lab
 }
 
-func (clt Client) GetMajorVersionNumber() (int, error) {
+func (clt *Client) GetMajorVersionNumber() (int, error) {
     num, err := strconv.Atoi(strings.Split(clt.ClientVersion, ".")[0])
 	if err != nil {
 		return -1, err
@@ -117,19 +123,21 @@ func (clt Client) GetMajorVersionNumber() (int, error) {
 // connectedClientIPs: all the client IPs that are currently connected to the server
 // Returns a status code and information; if status is success, then number of samples per replay
 //    is returned as the info; if status is failure, then failure code is returned as the info
-func (clt Client) Ask4Permission(replayNames []string, connectedClientIPs *ConnectedClients) (string, string) {
+func (clt *Client) Ask4Permission(replayNames []string, connectedClientIPs *ConnectedClients) (string, string) {
     // Client can't run replay if replay is not on the server
     if !clt.replayExists(replayNames) {
+        clt.Exceptions = "UnknownRelplayName"
         return ask4PermissionErrorStatus, ask4PermissionUnknownReplayMsg
     }
 
     // We allow only one client per IP at a time because multiple clients on an IP might affect throughputs
     if connectedClientIPs.Has(clt.PublicIP) {
+        clt.Exceptions = "NoPermission"
         return ask4PermissionErrorStatus, ask4PermissionIPInUseMsg
     }
 
     // Don't run replays if server is overloaded (>95% CPU, mem, disk, or >2000 Mbps network)
-    hasResources, err := clt.hasResources()
+    hasResources, err := clt.hasResources(len(connectedClientIPs.clientIPs))
     if err != nil {
         return ask4PermissionErrorStatus, ask4PermissionResourceRetrievalFailMsg
     }
@@ -143,7 +151,7 @@ func (clt Client) Ask4Permission(replayNames []string, connectedClientIPs *Conne
 // Checks if the replay that client would like to run is present on server.
 // replayNames: list of all the replay names on the server
 // Returns true if server has replay client wants to run; false otherwise
-func (clt Client) replayExists(replayNames []string) bool {
+func (clt *Client) replayExists(replayNames []string) bool {
     for _, replayName := range replayNames {
         if replayName == clt.ReplayName {
             return true
@@ -154,13 +162,15 @@ func (clt Client) replayExists(replayNames []string) bool {
 
 // Determines if the server has enough resources to run the replay. Don't deny permission if
 // resources can't be retrieved.
+// numConnectedClients: the number of clients currently connected to the server
 // Returns false if memory > 95% or disk > 95% or network upload > 2000 Mbps; true
 //    otherwise or any errors
-func (clt Client) hasResources() (bool, error) {
+func (clt *Client) hasResources(numConnectedClients int) (bool, error) {
     memUsage, err := mem.VirtualMemory()
     if err == nil {
         fmt.Println("mem:", memUsage.UsedPercent)
         if memUsage.UsedPercent > 95 {
+            clt.Exceptions = fmt.Sprintf("Server Overloaded with Memory Usage %d%% with %d active connections now ***", memUsage.UsedPercent, numConnectedClients)
             return false, nil
         }
     }
@@ -169,6 +179,7 @@ func (clt Client) hasResources() (bool, error) {
     if err == nil {
         fmt.Println("disk:", diskUsage.UsedPercent)
         if diskUsage.UsedPercent > 95 {
+            clt.Exceptions = fmt.Sprintf("Server Overloaded with Disk Usage %d%% with %d active connections now ***", diskUsage.UsedPercent, numConnectedClients)
             return false, nil
         }
     }
@@ -183,6 +194,7 @@ func (clt Client) hasResources() (bool, error) {
             uploadMbps := float64((bytesSent1 - bytesSent0) * 8) / 1000000.0
             fmt.Println("net:", uploadMbps)
             if uploadMbps > 2000 {
+                clt.Exceptions = fmt.Sprintf("Server Overloaded with Upload Bandwidth Usage %dMbps with %d active connections now ***", uploadMbps, numConnectedClients)
                 return false, nil
             }
         }
@@ -194,7 +206,7 @@ func (clt Client) hasResources() (bool, error) {
 // Receives information about the client mobile device, network, and location.
 // message: json containing the device, network, and location information
 // Returns any errors
-func (clt Client) ReceiveMobileStats(message string) error {
+func (clt *Client) ReceiveMobileStats(message string) error {
     fmt.Println("MOBILE STATS", message)
     var mobileStatsData map[string]interface{}
     err := json.Unmarshal([]byte(message), &mobileStatsData)
@@ -241,17 +253,17 @@ func (clt Client) ReceiveMobileStats(message string) error {
         locationInfo["latitude"] = lat
         locationInfo["longitude"] = long
     }
+    clt.MobileStats = mobileStatsData
     fmt.Printf("mobile stats: %v", mobileStatsData)
-    //TODO: figure out what to do with mobile stats once it is processed
     return nil
 }
 
 // Receives the duration of the replay, throughputs, and the sample times after a replay has been
-// run.
+// run. Writes throughputs to tempResultsDir/userID/clientXputs/Xput_<userID>_<testID>_<replayID>.json.
 // message: the data that has been received from the client
 // resultsDir: the root directory of the results to place the throughputs in
 // Returns any errors
-func (clt Client) ReceiveThroughputs(message string, resultsDir string) error {
+func (clt *Client) ReceiveThroughputs(message string, resultsDir string) error {
     // format: <replayDuration>;<[[throughputs],[sampleTimes]]
     data := strings.Split(message, ";")
     if len(data) < 2 {
@@ -261,18 +273,141 @@ func (clt Client) ReceiveThroughputs(message string, resultsDir string) error {
     if err != nil {
         return err
     }
-    replayDuration := replayDurationFloat * float64(time.Second)
-    fmt.Println("DEBUG replay duration", replayDuration)
+    clt.ReplayDuration = time.Duration(replayDurationFloat * float64(time.Second))
 
     // write the throughputs and sample times to file
     throughputDir := filepath.Join(resultsDir, clt.UserID, "clientXputs")
     filename := "Xput_" + clt.UserID + "_" + strconv.Itoa(clt.TestID) + "_" + strconv.Itoa(int(clt.ReplayID)) + ".json"
     throughputsAndSampleTimes := data[1]
     err = writeToFile(throughputDir, filename, throughputsAndSampleTimes)
+    if err != nil {
+        return err
+    }
     return nil
 }
 
-func (clt Client) CleanUp(connectedClientIPs *ConnectedClients) {
+// Anonymizes an IP address by returning the /24 of an IPv4 address or /48 of an IPv6 address.
+// ipString: the IP address to anonyize
+// Returns the anonyimzed IP address or any errors
+func getAnonIP(ipString string) (string, error) {
+    ip := net.ParseIP(ipString)
+    if ip == nil {
+        return "", fmt.Errorf("%s is not a valid IP address.\n", ipString)
+    }
+
+    ipv4 := ip.To4()
+    if ipv4 != nil {
+        mask := net.CIDRMask(24, 32) // /24 mask
+        anonIP := ipv4.Mask(mask)
+        return anonIP.String(), nil
+    }
+
+    ipv6 := ip.To16()
+    if ipv6 != nil {
+        mask := net.CIDRMask(48, 128) // /48 mask
+        anonIP := ipv6.Mask(mask)
+        return anonIP.String(), nil
+    }
+
+    return "", fmt.Errorf("Unknown IP address type: %s\n", ipString)
+}
+
+// Writes information about the replay to disk in a JSON array. The contents of the file match the
+// format of the old server; therefore some fields may be obsolete. Writes information to
+// tempResultsDir/userID/replayInfo/replayInfo_<userID>_<testID>_<replayID>.json.
+//
+// Items written to disk include:
+// 1. Replay start time - this is the time when the server received the client connection, the
+//    format being YYYY-MM-DD HH:MM:SS, in UTC
+// 2. User ID
+// 3. Anonymized client public IP
+// 4. Anonymized client public IP, again
+// 5. Name of the replay
+// 6. Extra string
+// 7. Test ID, as a string
+// 8. Replay ID, as a string
+// 9. Any exceptions (in practice this is always "NoExp", as if there is an exception, the code
+//    does not reach this point, even in the old version of the server)
+// 10. Whether the replay packets finish sending, as a boolean (this is always true, as the code,
+//     even in the old version, does not reach this point if the packets do not successfully send)
+// 11. Whether "result;no" and jitter are sent successfully, as a boolean (this is deprecated, so
+//     true is always sent)
+// 12. The iperf rate (this is deprecated, so it is always nil)
+// 13. The elapsed time, in seconds, between the client connection start time (#1) and now, as a float
+// 14. The number of seconds it took for the client to send its packets, as a string
+// 15. The mobile stats, as an escaped string in JSON format
+// 16. The boolean false
+// 17. Version number of the Wehe client
+// 18. A M-Lab globally unique UUID
+//
+// resultsDir: the root directory of the results to place the replay information in
+// Returns any errors
+func (clt *Client) WriteReplayInfoToFile(resultsDir string) error {
+    // convert start time into proper format
+    startTimeFormatted := clt.StartTime.Format("2006-01-02 15:04:05")
+    anonIP, err := getAnonIP(clt.PublicIP)
+    if err != nil {
+        return err
+    }
+
+    // convert mobile stats into a string
+    mobileStatsString, err := json.Marshal(clt.MobileStats)
+    if err != nil {
+        return err
+    }
+
+    // form the output JSON
+    outputItems := []interface{}{
+        startTimeFormatted, // 1
+        clt.UserID, // 2
+        anonIP, // 3
+        anonIP, // 4
+        clt.ReplayName, // 5
+        clt.ExtraString, // 6
+        strconv.Itoa(clt.TestID), // 7
+        strconv.Itoa(int(clt.ReplayID)), // 8
+        clt.Exceptions, // 9
+        true, // 10
+        true, // 11
+        nil, // 12
+        time.Since(clt.StartTime).Seconds(), // 13
+        strconv.FormatFloat(clt.ReplayDuration.Seconds(), 'f', 9, 64), // 14
+        string(mobileStatsString), // 15
+        false, // 16
+        clt.ClientVersion, // 17
+        clt.MLabUUID, // 18
+    }
+    jsonArrayOutput, err := json.Marshal(outputItems)
+    if err != nil {
+        return err
+    }
+
+    // write replay information to disk
+    replayInfoDir := filepath.Join(resultsDir, clt.UserID, "replayInfo")
+    filename := "replayInfo_" + clt.UserID + "_" + strconv.Itoa(clt.TestID) + "_" + strconv.Itoa(int(clt.ReplayID)) + ".json"
+    err = writeToFile(replayInfoDir, filename, string(jsonArrayOutput))
+    if err != nil {
+        return err
+    }
+    return nil
+}
+
+func (clt *Client) AnalyzeTest(message string) error {
+    data := strings.Split(message, ";")
+    if len(data) < 2 {
+        return fmt.Errorf("Received improperly formatted analyze test resquest: %s\n", message)
+    }
+    userID := data[0]
+    testID, err := strconv.Atoi(data[1])
+    if err != nil {
+        return err
+    }
+    _ = userID
+    _ = testID
+    return nil
+}
+
+func (clt *Client) CleanUp(connectedClientIPs *ConnectedClients) {
     fmt.Println("Cleaning up connection to", clt.PublicIP)
     connectedClientIPs.del(clt.PublicIP)
 }

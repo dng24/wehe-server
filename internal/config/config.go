@@ -12,6 +12,7 @@ import (
 type Config struct {
     TestsDir string
     PortNumbersFile string
+    TmpResultsDir string
     ResultsDir string
 }
 
@@ -33,6 +34,11 @@ func New(configPath *string) (Config, error) {
     }
 
     config.PortNumbersFile, err = getString(defaultSection, "port_numbers_file")
+    if err != nil {
+        return config, err
+    }
+
+    config.TmpResultsDir, err = getString(defaultSection, "tmp_results_dir")
     if err != nil {
         return config, err
     }

@@ -7,7 +7,7 @@ import (
     "wehe-server/internal/clienthandler"
 )
 
-func handleOldSideChannel(conn net.Conn, clientInfo clienthandler.Client) error {
+func handleOldSideChannel(conn net.Conn, clientInfo *clienthandler.Client) error {
 
     return nil
 }
