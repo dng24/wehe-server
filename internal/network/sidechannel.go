@@ -112,6 +112,7 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
             return
         }
     } else {
+        // TODO: add feature that forces user to upgrade if their version is too old
         for {
             buffer, err := sideChannel.readRequest(conn)
             if err != nil {
@@ -133,8 +134,16 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
                 if err == nil {
                     err = clt.WriteReplayInfoToFile(sideChannel.TmpResultsDir)
                 }
+                err = clt.AnalyzeTest()
             case byte(analyzeTest):
-                err = sideChannel.analyzeTest(clt, message)
+                err = sideChannel.analyzeTest(clt)
+                if err != nil {
+                    break
+                }
+                //err = clt.WriteResultsToFile()
+                //if err == nil {
+                //    err = clt.WriteReplayInfoToFile(sideChannel.TmpResultsDir)
+                //}
             default:
                 err = fmt.Errorf("Unknown side channel opcode: %d\n", opcode)
             }
@@ -392,8 +401,12 @@ func (sideChannel SideChannel) receiveThroughputs(clt *clienthandler.Client, mes
     return nil
 }
 
-func (sideChannel SideChannel) analyzeTest(clt *clienthandler.Client, message string) error {
-    err := clt.AnalyzeTest(message)
+// Performs a 2-sample KS test.
+// clt: the client handler that made the request
+// Returns any errors
+func (sideChannel SideChannel) analyzeTest(clt *clienthandler.Client) error {
+    // TODO: this should just return true, as analysis already occured automatically after throughputs sent
+    err := clt.AnalyzeTest()
     if err != nil {
         sideChannel.sendResponse(clt, errorResponse, "")
         return err

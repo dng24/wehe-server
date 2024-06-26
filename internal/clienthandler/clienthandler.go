@@ -18,6 +18,7 @@ import (
     "github.com/shirou/gopsutil/v3/mem"
     psutilnet "github.com/shirou/gopsutil/v3/net"
 
+    "wehe-server/internal/analysis"
     "wehe-server/internal/geolocation"
 )
 
@@ -105,8 +106,11 @@ type Client struct {
     MobileStats map[string]interface{} // information about the client device
     StartTime time.Time // time when side channel connection was made
     Exceptions string // any errors that occurred while running a replay
+    Throughputs []float64
+    SampleTimes []float64
     ReplayDuration time.Duration // time it took to run the replay
     MLabUUID string // globally unique ID for M-Lab
+    Analysis *analysis.AnalysisResults
 }
 
 func (clt *Client) GetMajorVersionNumber() (int, error) {
@@ -275,14 +279,58 @@ func (clt *Client) ReceiveThroughputs(message string, resultsDir string) error {
     }
     clt.ReplayDuration = time.Duration(replayDurationFloat * float64(time.Second))
 
-    // write the throughputs and sample times to file
-    throughputDir := filepath.Join(resultsDir, clt.UserID, "clientXputs")
-    filename := "Xput_" + clt.UserID + "_" + strconv.Itoa(clt.TestID) + "_" + strconv.Itoa(int(clt.ReplayID)) + ".json"
-    throughputsAndSampleTimes := data[1]
-    err = writeToFile(throughputDir, filename, throughputsAndSampleTimes)
+    var throughputsAndSampleTimes [][]float64
+    err = json.Unmarshal([]byte(data[1]), &throughputsAndSampleTimes)
     if err != nil {
         return err
     }
+
+    if len(throughputsAndSampleTimes) != 2 {
+        return fmt.Errorf("Received improperly formatted throughput and sample times. 2 items expected, received %d\n", len(throughputsAndSampleTimes))
+    }
+    clt.Throughputs = throughputsAndSampleTimes[0]
+    clt.SampleTimes = throughputsAndSampleTimes[1]
+
+    // write the throughputs and sample times to file; TODO: move to file writing function
+    throughputDir := filepath.Join(resultsDir, clt.UserID, "clientXputs")
+    filename := "Xput_" + clt.UserID + "_" + strconv.Itoa(clt.TestID) + "_" + strconv.Itoa(int(clt.ReplayID)) + ".json"
+
+    err = writeToFile(throughputDir, filename, data[1])
+    if err != nil {
+        return err
+    }
+    return nil
+}
+
+// Analyzes the test by performing a 2 sample KS test on the throughputs of the original and random
+// replays.
+// Returns any errors
+func (clt *Client) AnalyzeTest() error {
+    throughputStats, err := analysis.NewDataSetStats(clt.Throughputs)
+    if err != nil {
+        return err
+    }
+    sampleTimesStats, err := analysis.NewDataSetStats(clt.SampleTimes)
+    if err != nil {
+        return err
+    }
+    area := sampleTimesStats.Average - throughputStats.Average
+
+    xputMin := analysis.CalculateMinValueOfTwoSlices(throughputStats.Data, sampleTimesStats.Data)
+    areaOvar := analysis.CalculateArea0Var(throughputStats.Average, sampleTimesStats.Average)
+    ks2dVal, ks2pVal, err := analysis.KS2Samp(throughputStats.Data, sampleTimesStats.Data)
+    if err != nil {
+        return err
+    }
+    dValAvg, pValAvg, ks2AcceptRatio, err := analysis.SampleKS2(throughputStats.Data, sampleTimesStats.Data, ks2pVal)
+    if err != nil {
+        return err
+    }
+    clt.Analysis = analysis.NewAnalysisResults(throughputStats, sampleTimesStats, area, xputMin,
+        areaOvar, ks2dVal, ks2pVal, dValAvg, pValAvg, ks2AcceptRatio)
+
+    //TODO: write to file
+    fmt.Println("Analysis results:", clt.Analysis)
     return nil
 }
 
@@ -389,21 +437,6 @@ func (clt *Client) WriteReplayInfoToFile(resultsDir string) error {
     if err != nil {
         return err
     }
-    return nil
-}
-
-func (clt *Client) AnalyzeTest(message string) error {
-    data := strings.Split(message, ";")
-    if len(data) < 2 {
-        return fmt.Errorf("Received improperly formatted analyze test resquest: %s\n", message)
-    }
-    userID := data[0]
-    testID, err := strconv.Atoi(data[1])
-    if err != nil {
-        return err
-    }
-    _ = userID
-    _ = testID
     return nil
 }
 
