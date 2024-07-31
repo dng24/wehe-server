@@ -20,8 +20,8 @@ const (
 
 // An object that holds the results of different statistical analyses.
 type AnalysisResults struct {
-    ThroughputStats *DataSetStats
-    SampleTimesStats *DataSetStats
+    OriginalReplayStats *DataSetStats
+    RandomReplayStats *DataSetStats
     Area float64
     XPutMin float64
     Area0var float64
@@ -32,12 +32,12 @@ type AnalysisResults struct {
     KS2AcceptRatio float64
 }
 
-func NewAnalysisResults(throughputStats *DataSetStats, sampleTimesStats *DataSetStats,
+func NewAnalysisResults(originalReplayStats *DataSetStats, randomReplayStats *DataSetStats,
     area float64, xPutMin float64, area0var float64, ks2dVal float64, ks2pVal float64,
     dValAvg float64, pValAvg float64, ks2AcceptRatio float64) *AnalysisResults {
     return &AnalysisResults{
-        ThroughputStats: throughputStats,
-        SampleTimesStats: sampleTimesStats,
+        OriginalReplayStats: originalReplayStats,
+        RandomReplayStats: randomReplayStats,
         Area: area,
         XPutMin: xPutMin,
         Area0var: area0var,
@@ -49,6 +49,7 @@ func NewAnalysisResults(throughputStats *DataSetStats, sampleTimesStats *DataSet
     }
 }
 
+// TODO: bruh why is the server receiving much lower throughputs for the second replay??? seems like a bug
 // An object containing the data itself and basic statistics.
 type DataSetStats struct {
     Data []float64

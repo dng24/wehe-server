@@ -8,7 +8,9 @@ Things that are done
 
 List of TODOs
 - finish analyzer
+  - allow requests for different analyses
 - fix mlab prefix
+- should side channel use binary buffers instead of string?
 - confirmation replays
 - finish implementing pcap capture of replay traffic
 - use first packet to detect replay instead of IP

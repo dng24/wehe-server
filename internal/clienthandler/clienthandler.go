@@ -474,7 +474,7 @@ func (clt *Client) AnalyzeTest() error {
         areaOvar, ks2dVal, ks2pVal, dValAvg, pValAvg, ks2AcceptRatio)
 
     //TODO: write to file
-    fmt.Println("Analysis results:", clt.Analysis)
+    fmt.Printf("Analysis results:\n\t%v\n\t%v\n\t%v\n", clt.Analysis.OriginalReplayStats, clt.Analysis.RandomReplayStats, clt.Analysis)
     return nil
 }
 

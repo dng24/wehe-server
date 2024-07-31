@@ -5,6 +5,7 @@ package network
 import (
     "fmt"
     "encoding/binary"
+    "encoding/json"
     "io"
     "net"
     "strconv"
@@ -410,6 +411,14 @@ func (sideChannel SideChannel) declareReplay(clt *clienthandler.Client, message 
     return nil
 }
 
+// The stats to send back to the client for a 2-sample KS test analysis
+type KS2Result struct {
+    Area0var float64 `json:"Area0Var"`
+    KS2pVal float64 `json:"KS2pVal"`
+    OriginalAvgThroughput float64 `json:"OriginalAvgThroughput"`
+    RandomAvgThroughput float64 `json:"RandomAvgThroughput"`
+}
+
 // Performs a 2-sample KS test.
 // clt: the client handler that made the request
 // Returns any errors
@@ -419,7 +428,18 @@ func (sideChannel SideChannel) analyzeTest(clt *clienthandler.Client) error {
         sideChannel.sendResponse(clt, errorResponse, "")
         return err
     }
-    err = sideChannel.sendResponse(clt, okResponse, "")
+    ks2Result := KS2Result{
+        Area0var: clt.Analysis.Area0var,
+        KS2pVal: clt.Analysis.KS2pVal,
+        OriginalAvgThroughput: clt.Analysis.OriginalReplayStats.Average,
+        RandomAvgThroughput: clt.Analysis.RandomReplayStats.Average,
+    }
+    jsonBytes, err := json.Marshal(ks2Result)
+    if err != nil {
+        return err
+    }
+
+    err = sideChannel.sendResponse(clt, okResponse, string(jsonBytes))
     if err != nil {
         return err
     }
