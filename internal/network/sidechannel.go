@@ -9,7 +9,6 @@ import (
     "net"
     "strconv"
     "strings"
-    "time"
 
     "github.com/m-lab/uuid"
 
@@ -26,6 +25,7 @@ const (
     ask4permission opcode = iota
     mobileStats
     throughputs
+    declareReplay
     analyzeTest
 )
 
@@ -134,7 +134,8 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
                 if err == nil {
                     err = clt.WriteReplayInfoToFile(sideChannel.TmpResultsDir)
                 }
-                err = clt.AnalyzeTest()
+            case byte(declareReplay):
+                err = sideChannel.declareReplay(clt, message)
             case byte(analyzeTest):
                 err = sideChannel.analyzeTest(clt)
                 if err != nil {
@@ -303,20 +304,8 @@ func (sideChannel SideChannel) receiveID(conn net.Conn) (*clienthandler.Client, 
         return &clienthandler.Client{}, err
     }
 
-    clt := &clienthandler.Client{
-        Conn: conn,
-        UserID: userID,
-        ReplayID: replayID,
-        ReplayName: replayName,
-        ExtraString: extraString,
-        TestID: testID,
-        IsLastReplay: isLastReplay,
-        PublicIP: publicIP,
-        ClientVersion: clientVersion,
-        StartTime: time.Now().UTC(),
-        Exceptions: "NoExp",
-        MLabUUID: mlabUUID,
-    }
+    clt := clienthandler.NewClient(conn, userID, extraString, testID, publicIP, clientVersion, mlabUUID)
+    clt.AddReplay(replayID, replayName, isLastReplay)
 
     fmt.Println(clt)
     return clt, nil
@@ -358,9 +347,12 @@ func getClientPublicIP(conn net.Conn) (string, error) {
 // clt: the client handler that made the request
 // Returns any errors
 func (sideChannel SideChannel) ask4Permission(clt *clienthandler.Client) error {
-    status, info := clt.Ask4Permission(sideChannel.ReplayNames, sideChannel.ConnectedClients)
+    status, info, err := clt.Ask4Permission(sideChannel.ReplayNames, sideChannel.ConnectedClients)
+    if err != nil {
+        return err
+    }
     resp := status + ";" + info
-    err := sideChannel.sendResponse(clt, okResponse, resp)
+    err = sideChannel.sendResponse(clt, okResponse, resp)
     if err != nil {
         return err
     }
@@ -401,11 +393,27 @@ func (sideChannel SideChannel) receiveThroughputs(clt *clienthandler.Client, mes
     return nil
 }
 
+// Receives request to run an additional replay and determines if that replay is allowed to run.
+// clt: the client handler that made the request
+// message: the data received from the client
+// Returns any errors
+func (sideChannel SideChannel) declareReplay(clt *clienthandler.Client, message string) error {
+    status, info, err := clt.DeclareReplay(sideChannel.ReplayNames, message)
+    if err != nil {
+        return err
+    }
+    resp := status + ";" + info
+    err = sideChannel.sendResponse(clt, okResponse, resp)
+    if err != nil {
+        return err
+    }
+    return nil
+}
+
 // Performs a 2-sample KS test.
 // clt: the client handler that made the request
 // Returns any errors
 func (sideChannel SideChannel) analyzeTest(clt *clienthandler.Client) error {
-    // TODO: this should just return true, as analysis already occured automatically after throughputs sent
     err := clt.AnalyzeTest()
     if err != nil {
         sideChannel.sendResponse(clt, errorResponse, "")

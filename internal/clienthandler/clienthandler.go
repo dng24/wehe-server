@@ -92,12 +92,19 @@ func (connectedClients *ConnectedClients) del(ip string) {
     delete(connectedClients.clientIPs, ip)
 }
 
-//TODO: refactor to have a constructor
+// Information about the data generated from a replay.
+type ReplayResult struct {
+    ReplayID ReplayType // indicates whether replay is the original or random replay
+    ReplayName string // name of the replay to run
+    Throughputs []float64 // throughput samples
+    SampleTimes []float64 // list of the number of seconds since start of replay that each throughput sample was captured
+    ReplayDuration time.Duration // time it took to run the replay
+}
+
+// Information about a client. Each test gets a Client struct.
 type Client struct {
     Conn net.Conn // the connection to the client
     UserID string // the 10 character user ID
-    ReplayID ReplayType // indicates whether replay is the original or random replay
-    ReplayName string // name of the replay to run
     ExtraString string // extra information; in the current version, it is number attempts client makes to MLab before successful connection
     TestID int // the ID of the test for the particular user
     IsLastReplay bool // true if this is the last replay of the test; false otherwise
@@ -106,11 +113,56 @@ type Client struct {
     MobileStats map[string]interface{} // information about the client device
     StartTime time.Time // time when side channel connection was made
     Exceptions string // any errors that occurred while running a replay
-    Throughputs []float64
-    SampleTimes []float64
-    ReplayDuration time.Duration // time it took to run the replay
     MLabUUID string // globally unique ID for M-Lab
-    Analysis *analysis.AnalysisResults
+    ReplayResults []ReplayResult // data collected from running a replay
+    Analysis *analysis.AnalysisResults // analysis results of the test
+}
+
+// Constructs a new Client.
+// conn: the side channel connection to the client
+// userID: the 10-character user ID that identifies a device
+// extraString: extra information
+// testID: identifies the test for the given user
+// publicIP: public IP of the client retrieved from the test port
+// clientVersion: version number of the Wehe client
+// mlabUUID: globally unique ID for M-Lab
+// Returns a pointer to a Client
+func NewClient(conn net.Conn, userID string, extraString string, testID int, publicIP string, clientVersion string, mlabUUID string) *Client {
+    return &Client{
+        Conn: conn,
+        UserID: userID,
+        ExtraString: extraString,
+        TestID: testID,
+        PublicIP: publicIP,
+        ClientVersion: clientVersion,
+        StartTime: time.Now().UTC(),
+        Exceptions: "NoExp",
+        MLabUUID: mlabUUID,
+        ReplayResults: []ReplayResult{},
+    }
+}
+
+// Adds a replay to the Client. A replay must be added to the Client before it can begin.
+// replayID: the type of replay to run
+// replayName: the name of the replay
+// isLastReplay: true if this replay is the last replay in the test; false otherwise
+func (clt *Client) AddReplay(replayID ReplayType, replayName string, isLastReplay bool) {
+    replayResult := ReplayResult{
+        ReplayID: replayID,
+        ReplayName: replayName,
+    }
+    clt.ReplayResults = append(clt.ReplayResults, replayResult)
+    clt.IsLastReplay = isLastReplay
+}
+
+// Retrieves the replay that was last added.
+// Returns the replay last added, or any errors
+func (clt *Client) getCurrentReplay() (*ReplayResult, error) {
+    replayResultsLen := len(clt.ReplayResults)
+    if replayResultsLen == 0 {
+        return &ReplayResult{}, fmt.Errorf("There are currently no replays.\n")
+    }
+    return &clt.ReplayResults[len(clt.ReplayResults) - 1], nil
 }
 
 func (clt *Client) GetMajorVersionNumber() (int, error) {
@@ -126,38 +178,46 @@ func (clt *Client) GetMajorVersionNumber() (int, error) {
 // replayNames: names of all replays
 // connectedClientIPs: all the client IPs that are currently connected to the server
 // Returns a status code and information; if status is success, then number of samples per replay
-//    is returned as the info; if status is failure, then failure code is returned as the info
-func (clt *Client) Ask4Permission(replayNames []string, connectedClientIPs *ConnectedClients) (string, string) {
+//    is returned as the info; if status is failure, then failure code is returned as the info;
+//    or any errors
+func (clt *Client) Ask4Permission(replayNames []string, connectedClientIPs *ConnectedClients) (string, string, error) {
+    currentReplay, err := clt.getCurrentReplay()
+    if err != nil {
+        return "", "", err
+    }
+
     // Client can't run replay if replay is not on the server
-    if !clt.replayExists(replayNames) {
+    if !clt.replayExists(replayNames, currentReplay.ReplayName) {
         clt.Exceptions = "UnknownRelplayName"
-        return ask4PermissionErrorStatus, ask4PermissionUnknownReplayMsg
+        return ask4PermissionErrorStatus, ask4PermissionUnknownReplayMsg, nil
     }
 
     // We allow only one client per IP at a time because multiple clients on an IP might affect throughputs
     if connectedClientIPs.Has(clt.PublicIP) {
         clt.Exceptions = "NoPermission"
-        return ask4PermissionErrorStatus, ask4PermissionIPInUseMsg
+        return ask4PermissionErrorStatus, ask4PermissionIPInUseMsg, nil
     }
 
     // Don't run replays if server is overloaded (>95% CPU, mem, disk, or >2000 Mbps network)
     hasResources, err := clt.hasResources(len(connectedClientIPs.clientIPs))
     if err != nil {
-        return ask4PermissionErrorStatus, ask4PermissionResourceRetrievalFailMsg
+        return ask4PermissionErrorStatus, ask4PermissionResourceRetrievalFailMsg, nil
     }
     if !hasResources {
-        return ask4PermissionErrorStatus, ask4PermissionLowResourcesMsg
+        return ask4PermissionErrorStatus, ask4PermissionLowResourcesMsg, nil
     }
-    connectedClientIPs.add(clt.PublicIP, clt.ReplayName)
-    return ask4PermissionOkStatus, strconv.Itoa(samplesPerReplay)
+
+    connectedClientIPs.add(clt.PublicIP, currentReplay.ReplayName)
+    return ask4PermissionOkStatus, strconv.Itoa(samplesPerReplay), nil
 }
 
 // Checks if the replay that client would like to run is present on server.
 // replayNames: list of all the replay names on the server
+// currentReplayName: the name of the replay to check if it exists
 // Returns true if server has replay client wants to run; false otherwise
-func (clt *Client) replayExists(replayNames []string) bool {
+func (clt *Client) replayExists(replayNames []string, currentReplayName string) bool {
     for _, replayName := range replayNames {
-        if replayName == clt.ReplayName {
+        if replayName == currentReplayName {
             return true
         }
     }
@@ -268,6 +328,11 @@ func (clt *Client) ReceiveMobileStats(message string) error {
 // resultsDir: the root directory of the results to place the throughputs in
 // Returns any errors
 func (clt *Client) ReceiveThroughputs(message string, resultsDir string) error {
+    currentReplay, err := clt.getCurrentReplay()
+    if err != nil {
+        return err
+    }
+
     // format: <replayDuration>;<[[throughputs],[sampleTimes]]
     data := strings.Split(message, ";")
     if len(data) < 2 {
@@ -277,7 +342,7 @@ func (clt *Client) ReceiveThroughputs(message string, resultsDir string) error {
     if err != nil {
         return err
     }
-    clt.ReplayDuration = time.Duration(replayDurationFloat * float64(time.Second))
+    currentReplay.ReplayDuration = time.Duration(replayDurationFloat * float64(time.Second))
 
     var throughputsAndSampleTimes [][]float64
     err = json.Unmarshal([]byte(data[1]), &throughputsAndSampleTimes)
@@ -288,12 +353,12 @@ func (clt *Client) ReceiveThroughputs(message string, resultsDir string) error {
     if len(throughputsAndSampleTimes) != 2 {
         return fmt.Errorf("Received improperly formatted throughput and sample times. 2 items expected, received %d\n", len(throughputsAndSampleTimes))
     }
-    clt.Throughputs = throughputsAndSampleTimes[0]
-    clt.SampleTimes = throughputsAndSampleTimes[1]
+    currentReplay.Throughputs = throughputsAndSampleTimes[0]
+    currentReplay.SampleTimes = throughputsAndSampleTimes[1]
 
     // write the throughputs and sample times to file; TODO: move to file writing function
     throughputDir := filepath.Join(resultsDir, clt.UserID, "clientXputs")
-    filename := "Xput_" + clt.UserID + "_" + strconv.Itoa(clt.TestID) + "_" + strconv.Itoa(int(clt.ReplayID)) + ".json"
+    filename := "Xput_" + clt.UserID + "_" + strconv.Itoa(clt.TestID) + "_" + strconv.Itoa(int(currentReplay.ReplayID)) + ".json"
 
     err = writeToFile(throughputDir, filename, data[1])
     if err != nil {
@@ -302,31 +367,110 @@ func (clt *Client) ReceiveThroughputs(message string, resultsDir string) error {
     return nil
 }
 
+// Receives a request to run additional replays in a test. Request to run the first replay in a
+// test is sent in DeclareID. Replay is checked if it exists on server.
+// replayNames: the names of all replays available to run
+// message: the data that has been received from the client
+// Returns a status code and information; if status is success, then number of samples per replay
+//    is returned as the info; if status is failure, then failure code is returned as the info;
+//    and any errors
+func (clt *Client) DeclareReplay(replayNames []string, message string) (string, string, error) {
+    // message is <replayID>;<replayName>;<isLastReplay>
+    pieces := strings.Split(message, ";")
+    if len(pieces) < 3 {
+        return "", "", fmt.Errorf("Expected to receive at least 3 pieces from declare replay; only received %d.\n", len(pieces))
+    }
+
+    replayIDInt, err := strconv.Atoi(pieces[0])
+    if err != nil {
+        return "", "", err
+    }
+    var replayID ReplayType
+    if replayIDInt == 0 {
+        replayID = Original
+    } else if replayIDInt == 1 {
+        replayID = Random
+    } else {
+        return "", "", fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
+    }
+
+    //TODO: change client replay files replay names to use _ instead of -, then delete this terrible replace code
+    replayName := strings.Replace(pieces[1], "-", "_", -1)
+
+    isLastReplay, err := strToBool(pieces[2])
+    if err != nil {
+        return "", "", err
+    }
+
+    clt.AddReplay(replayID, replayName, isLastReplay)
+
+    // Client can't run replay if replay is not on the server
+    if !clt.replayExists(replayNames, replayName) {
+        clt.Exceptions = "UnknownRelplayName"
+        return ask4PermissionErrorStatus, ask4PermissionUnknownReplayMsg, nil
+    }
+
+    return ask4PermissionOkStatus, strconv.Itoa(samplesPerReplay), nil
+}
+
+// Converts a string to boolean.
+// str: the string to convert into a bool
+// Returns a bool or any errors
+func strToBool(str string) (bool, error) {
+    lowerStr := strings.ToLower(str)
+    if lowerStr == "true" {
+        return true, nil
+    } else if lowerStr == "false" {
+        return false, nil
+    } else {
+        return false, fmt.Errorf("Cannot parse '%s' into a bool\n", str)
+    }
+}
+
 // Analyzes the test by performing a 2 sample KS test on the throughputs of the original and random
 // replays.
 // Returns any errors
 func (clt *Client) AnalyzeTest() error {
-    throughputStats, err := analysis.NewDataSetStats(clt.Throughputs)
-    if err != nil {
-        return err
+    //TODO: rename all AnalyzeTest to 2 sample KS test
+    if len(clt.ReplayResults) < 2 {
+        return fmt.Errorf("There needs to be two results to do 2-sample KS test. There are currently %d results.\n", len(clt.ReplayResults))
     }
-    sampleTimesStats, err := analysis.NewDataSetStats(clt.SampleTimes)
-    if err != nil {
-        return err
-    }
-    area := sampleTimesStats.Average - throughputStats.Average
 
-    xputMin := analysis.CalculateMinValueOfTwoSlices(throughputStats.Data, sampleTimesStats.Data)
-    areaOvar := analysis.CalculateArea0Var(throughputStats.Average, sampleTimesStats.Average)
-    ks2dVal, ks2pVal, err := analysis.KS2Samp(throughputStats.Data, sampleTimesStats.Data)
+    // determine order of replay types
+    var originalReplayIndex int
+    var randomReplayIndex int
+    if clt.ReplayResults[0].ReplayID == Original && clt.ReplayResults[1].ReplayID == Random {
+        originalReplayIndex = 0
+        randomReplayIndex = 1
+    } else if clt.ReplayResults[0].ReplayID == Random && clt.ReplayResults[1].ReplayID == Original {
+        randomReplayIndex = 0
+        originalReplayIndex = 1
+    } else {
+        return fmt.Errorf("Invalid replay types for 2-sample KS test: %v and %v\n", clt.ReplayResults[0].ReplayID, clt.ReplayResults[1].ReplayID)
+    }
+
+    // do analyses
+    originalReplayStats, err := analysis.NewDataSetStats(clt.ReplayResults[originalReplayIndex].Throughputs)
     if err != nil {
         return err
     }
-    dValAvg, pValAvg, ks2AcceptRatio, err := analysis.SampleKS2(throughputStats.Data, sampleTimesStats.Data, ks2pVal)
+    randomReplayStats, err := analysis.NewDataSetStats(clt.ReplayResults[randomReplayIndex].SampleTimes)
     if err != nil {
         return err
     }
-    clt.Analysis = analysis.NewAnalysisResults(throughputStats, sampleTimesStats, area, xputMin,
+    area := randomReplayStats.Average - originalReplayStats.Average
+
+    xputMin := analysis.CalculateMinValueOfTwoSlices(originalReplayStats.Data, randomReplayStats.Data)
+    areaOvar := analysis.CalculateArea0Var(originalReplayStats.Average, randomReplayStats.Average)
+    ks2dVal, ks2pVal, err := analysis.KS2Samp(originalReplayStats.Data, randomReplayStats.Data)
+    if err != nil {
+        return err
+    }
+    dValAvg, pValAvg, ks2AcceptRatio, err := analysis.SampleKS2(originalReplayStats.Data, randomReplayStats.Data, ks2pVal)
+    if err != nil {
+        return err
+    }
+    clt.Analysis = analysis.NewAnalysisResults(originalReplayStats, randomReplayStats, area, xputMin,
         areaOvar, ks2dVal, ks2pVal, dValAvg, pValAvg, ks2AcceptRatio)
 
     //TODO: write to file
@@ -391,6 +535,11 @@ func getAnonIP(ipString string) (string, error) {
 // resultsDir: the root directory of the results to place the replay information in
 // Returns any errors
 func (clt *Client) WriteReplayInfoToFile(resultsDir string) error {
+    currentReplay, err := clt.getCurrentReplay()
+    if err != nil {
+        return err
+    }
+
     // convert start time into proper format
     startTimeFormatted := clt.StartTime.Format("2006-01-02 15:04:05")
     anonIP, err := getAnonIP(clt.PublicIP)
@@ -410,16 +559,16 @@ func (clt *Client) WriteReplayInfoToFile(resultsDir string) error {
         clt.UserID, // 2
         anonIP, // 3
         anonIP, // 4
-        clt.ReplayName, // 5
+        currentReplay.ReplayName, // 5
         clt.ExtraString, // 6
         strconv.Itoa(clt.TestID), // 7
-        strconv.Itoa(int(clt.ReplayID)), // 8
+        strconv.Itoa(int(currentReplay.ReplayID)), // 8
         clt.Exceptions, // 9
         true, // 10
         true, // 11
         nil, // 12
         time.Since(clt.StartTime).Seconds(), // 13
-        strconv.FormatFloat(clt.ReplayDuration.Seconds(), 'f', 9, 64), // 14
+        strconv.FormatFloat(currentReplay.ReplayDuration.Seconds(), 'f', 9, 64), // 14
         string(mobileStatsString), // 15
         false, // 16
         clt.ClientVersion, // 17
@@ -432,7 +581,7 @@ func (clt *Client) WriteReplayInfoToFile(resultsDir string) error {
 
     // write replay information to disk
     replayInfoDir := filepath.Join(resultsDir, clt.UserID, "replayInfo")
-    filename := "replayInfo_" + clt.UserID + "_" + strconv.Itoa(clt.TestID) + "_" + strconv.Itoa(int(clt.ReplayID)) + ".json"
+    filename := "replayInfo_" + clt.UserID + "_" + strconv.Itoa(clt.TestID) + "_" + strconv.Itoa(int(currentReplay.ReplayID)) + ".json"
     err = writeToFile(replayInfoDir, filename, string(jsonArrayOutput))
     if err != nil {
         return err

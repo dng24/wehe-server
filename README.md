@@ -8,7 +8,10 @@ Things that are done
 
 List of TODOs
 - finish analyzer
+- fix mlab prefix
+- confirmation replays
 - finish implementing pcap capture of replay traffic
+- use first packet to detect replay instead of IP
 - implement encryption/certs for side channel
 - implement "replay store" where users/servers can download/update/delete replays
 - implement backwards compatible server so that old clients can still run

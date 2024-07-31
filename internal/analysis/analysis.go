@@ -108,6 +108,7 @@ func CalculateArea0Var(avg1 float64, avg2 float64) float64 {
 func KS2Samp(data1 []float64, data2 []float64) (float64, float64, error) {
     data1Formatted := strings.ReplaceAll(fmt.Sprintf("%g", data1), " ", ",")
     data2Formatted := strings.ReplaceAll(fmt.Sprintf("%g", data2), " ", ",")
+    // TODO: python call takes too long (10 sec)
     ksTestCmd := fmt.Sprintf("from scipy.stats import ks_2samp; (stat,pval) = ks_2samp(%s,%s); print(stat,pval)",
         data1Formatted, data2Formatted)
     cmd := exec.Command("python3", "-c", ksTestCmd)
