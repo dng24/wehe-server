@@ -48,7 +48,11 @@ type SideChannel struct {
     ResultsDir string // the directory to write permanent results to
 }
 
-func NewSideChannel(ip string, replayNames []string, tmpResultsDir string, resultsDir string) SideChannel {
+func NewSideChannel(ip string, replayNames []string, uuidPrefixFile string, tmpResultsDir string, resultsDir string) (SideChannel, error) {
+    err := uuid.SetUUIDPrefixFile(uuidPrefixFile)
+    if err != nil {
+        return SideChannel{}, err
+    }
     return SideChannel{
         IP: ip,
         Port: port,
@@ -56,7 +60,7 @@ func NewSideChannel(ip string, replayNames []string, tmpResultsDir string, resul
         ConnectedClients: clienthandler.NewConnectedClients(),
         TmpResultsDir: tmpResultsDir,
         ResultsDir: resultsDir,
-    }
+    }, nil
 }
 
 // Starts the side channel server and listen for client connections.

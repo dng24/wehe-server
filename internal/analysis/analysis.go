@@ -49,7 +49,6 @@ func NewAnalysisResults(originalReplayStats *DataSetStats, randomReplayStats *Da
     }
 }
 
-// TODO: bruh why is the server receiving much lower throughputs for the second replay??? seems like a bug
 // An object containing the data itself and basic statistics.
 type DataSetStats struct {
     Data []float64

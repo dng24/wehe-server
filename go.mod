@@ -4,7 +4,7 @@ go 1.21.5
 
 require (
 	github.com/google/gopacket v1.1.19
-	github.com/m-lab/uuid v1.0.1
+	github.com/m-lab/uuid v1.0.2
 	github.com/shirou/gopsutil/v3 v3.24.1
 	gonum.org/v1/gonum v0.14.0
 	gopkg.in/ini.v1 v1.67.0

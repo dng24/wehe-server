@@ -35,7 +35,10 @@ func Run(cfg config.Config) error {
     }
 
     errChan := make(chan error)
-    sideChannel := network.NewSideChannel("0.0.0.0", replayNames, cfg.TmpResultsDir, cfg.ResultsDir)
+    sideChannel, err := network.NewSideChannel("0.0.0.0", replayNames, cfg.UUIDPrefixFile, cfg.TmpResultsDir, cfg.ResultsDir)
+    if err != nil {
+        return err
+    }
     go sideChannel.StartServer(errChan)
 
     // TODO: revisit this comment - will we still use WHATSMYIPMAN? will it be on a separate port?

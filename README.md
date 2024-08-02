@@ -17,6 +17,8 @@ List of TODOs
 - implement encryption/certs for side channel
 - implement "replay store" where users/servers can download/update/delete replays
 - implement backwards compatible server so that old clients can still run
+- add logging
+  - print out stack trace on errors
 - write unit tests
 - fix all the todos scattered in the code
 - more testing

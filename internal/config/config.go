@@ -7,6 +7,7 @@ import (
     "gopkg.in/ini.v1"
 )
 
+// TODO: should this just be command line args; no need to pass around config file with binary when released
 // Configurations for the Wehe server
 // configs are read in from a .ini config file
 type Config struct {
@@ -14,6 +15,7 @@ type Config struct {
     PortNumbersFile string
     TmpResultsDir string
     ResultsDir string
+    UUIDPrefixFile string
 }
 
 // Creates a new Config object
@@ -44,6 +46,11 @@ func New(configPath *string) (Config, error) {
     }
 
     config.ResultsDir, err = getString(defaultSection, "results_dir")
+    if err != nil {
+        return config, err
+    }
+
+    config.UUIDPrefixFile, err = getString(defaultSection, "uuid_prefix_file")
     if err != nil {
         return config, err
     }
