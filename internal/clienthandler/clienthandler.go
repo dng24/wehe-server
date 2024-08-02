@@ -454,7 +454,7 @@ func (clt *Client) AnalyzeTest() error {
     if err != nil {
         return err
     }
-    randomReplayStats, err := analysis.NewDataSetStats(clt.ReplayResults[randomReplayIndex].SampleTimes)
+    randomReplayStats, err := analysis.NewDataSetStats(clt.ReplayResults[randomReplayIndex].Throughputs)
     if err != nil {
         return err
     }
