@@ -111,7 +111,8 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
 
     // Wehe version before 4.0 have a different protocol than current Wehe versions
     if majorVersion < 4 {
-        err = handleOldSideChannel(conn, clt)
+        fmt.Println("Handling old client")
+        err = sideChannel.handleOldSideChannel(clt)
         if err != nil {
             sideChannel.handleSideChannelError(err, clt)
             return
@@ -168,6 +169,7 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
 func (sideChannel SideChannel) readRequest(conn net.Conn) ([]byte, error) {
     // get size of message
     dataLengthBytes := make([]byte, 4)
+    // TODO: this might not read all the bytes
     _, err := conn.Read(dataLengthBytes)
     if err != nil {
         return nil, err
@@ -245,7 +247,9 @@ func getMessage(buffer []byte, n int) (string, error) {
 // conn: the connection to the client
 // Returns a information about the client or any errors
 func (sideChannel SideChannel) receiveID(conn net.Conn) (*clienthandler.Client, error) {
-    buffer, err := sideChannel.readRequest(conn)
+    // TODO: this current doesn't work with new client; figure out how to detect old vs new client
+    // so that oldReadRequest or readRequest can be called appropriately
+    buffer, err := sideChannel.oldReadRequest(conn)
     if err != nil {
         return &clienthandler.Client{}, err
     }

@@ -23,13 +23,13 @@ import (
 )
 
 const (
-    samplesPerReplay = 100 //TODO: think ab if this should be in config file - theoretically, all clients should work if this changes
-    ask4PermissionOkStatus = "0"
-    ask4PermissionErrorStatus = "1"
-    ask4PermissionUnknownReplayMsg = "1"
-    ask4PermissionIPInUseMsg = "2"
-    ask4PermissionLowResourcesMsg = "3"
-    ask4PermissionResourceRetrievalFailMsg = "4"
+    SamplesPerReplay = 100 //TODO: think ab if this should be in config file - theoretically, all clients should work if this changes
+    Ask4PermissionOkStatus = "0"
+    Ask4PermissionErrorStatus = "1"
+    Ask4PermissionUnknownReplayMsg = "1"
+    Ask4PermissionIPInUseMsg = "2"
+    Ask4PermissionLowResourcesMsg = "3"
+    Ask4PermissionResourceRetrievalFailMsg = "4"
 )
 
 //TODO: move to replay file when that exists
@@ -157,7 +157,7 @@ func (clt *Client) AddReplay(replayID ReplayType, replayName string, isLastRepla
 
 // Retrieves the replay that was last added.
 // Returns the replay last added, or any errors
-func (clt *Client) getCurrentReplay() (*ReplayResult, error) {
+func (clt *Client) GetCurrentReplay() (*ReplayResult, error) {
     replayResultsLen := len(clt.ReplayResults)
     if replayResultsLen == 0 {
         return &ReplayResult{}, fmt.Errorf("There are currently no replays.\n")
@@ -181,7 +181,7 @@ func (clt *Client) GetMajorVersionNumber() (int, error) {
 //    is returned as the info; if status is failure, then failure code is returned as the info;
 //    or any errors
 func (clt *Client) Ask4Permission(replayNames []string, connectedClientIPs *ConnectedClients) (string, string, error) {
-    currentReplay, err := clt.getCurrentReplay()
+    currentReplay, err := clt.GetCurrentReplay()
     if err != nil {
         return "", "", err
     }
@@ -189,26 +189,26 @@ func (clt *Client) Ask4Permission(replayNames []string, connectedClientIPs *Conn
     // Client can't run replay if replay is not on the server
     if !clt.replayExists(replayNames, currentReplay.ReplayName) {
         clt.Exceptions = "UnknownRelplayName"
-        return ask4PermissionErrorStatus, ask4PermissionUnknownReplayMsg, nil
+        return Ask4PermissionErrorStatus, Ask4PermissionUnknownReplayMsg, nil
     }
 
     // We allow only one client per IP at a time because multiple clients on an IP might affect throughputs
     if connectedClientIPs.Has(clt.PublicIP) {
         clt.Exceptions = "NoPermission"
-        return ask4PermissionErrorStatus, ask4PermissionIPInUseMsg, nil
+        return Ask4PermissionErrorStatus, Ask4PermissionIPInUseMsg, nil
     }
 
     // Don't run replays if server is overloaded (>95% CPU, mem, disk, or >2000 Mbps network)
     hasResources, err := clt.hasResources(len(connectedClientIPs.clientIPs))
     if err != nil {
-        return ask4PermissionErrorStatus, ask4PermissionResourceRetrievalFailMsg, nil
+        return Ask4PermissionErrorStatus, Ask4PermissionResourceRetrievalFailMsg, nil
     }
     if !hasResources {
-        return ask4PermissionErrorStatus, ask4PermissionLowResourcesMsg, nil
+        return Ask4PermissionErrorStatus, Ask4PermissionLowResourcesMsg, nil
     }
 
     connectedClientIPs.add(clt.PublicIP, currentReplay.ReplayName)
-    return ask4PermissionOkStatus, strconv.Itoa(samplesPerReplay), nil
+    return Ask4PermissionOkStatus, strconv.Itoa(SamplesPerReplay), nil
 }
 
 // Checks if the replay that client would like to run is present on server.
@@ -328,12 +328,12 @@ func (clt *Client) ReceiveMobileStats(message string) error {
 // resultsDir: the root directory of the results to place the throughputs in
 // Returns any errors
 func (clt *Client) ReceiveThroughputs(message string, resultsDir string) error {
-    currentReplay, err := clt.getCurrentReplay()
+    currentReplay, err := clt.GetCurrentReplay()
     if err != nil {
         return err
     }
 
-    // format: <replayDuration>;<[[throughputs],[sampleTimes]]
+    // format: <replayDuration>;<[[throughputs],[sampleTimes]]>
     data := strings.Split(message, ";")
     if len(data) < 2 {
         return fmt.Errorf("Received improperly formatted throughput data: %s\n", message)
@@ -407,10 +407,10 @@ func (clt *Client) DeclareReplay(replayNames []string, message string) (string, 
     // Client can't run replay if replay is not on the server
     if !clt.replayExists(replayNames, replayName) {
         clt.Exceptions = "UnknownRelplayName"
-        return ask4PermissionErrorStatus, ask4PermissionUnknownReplayMsg, nil
+        return Ask4PermissionErrorStatus, Ask4PermissionUnknownReplayMsg, nil
     }
 
-    return ask4PermissionOkStatus, strconv.Itoa(samplesPerReplay), nil
+    return Ask4PermissionOkStatus, strconv.Itoa(SamplesPerReplay), nil
 }
 
 // Converts a string to boolean.
@@ -535,7 +535,7 @@ func getAnonIP(ipString string) (string, error) {
 // resultsDir: the root directory of the results to place the replay information in
 // Returns any errors
 func (clt *Client) WriteReplayInfoToFile(resultsDir string) error {
-    currentReplay, err := clt.getCurrentReplay()
+    currentReplay, err := clt.GetCurrentReplay()
     if err != nil {
         return err
     }

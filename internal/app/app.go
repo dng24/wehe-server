@@ -60,6 +60,8 @@ func Run(cfg config.Config) error {
         udpServers = append(udpServers, udpServer)
     }
 
+    go network.StartOldAnalyzerServer(errChan)
+
     err = <-errChan
     if err != nil {
         return err
