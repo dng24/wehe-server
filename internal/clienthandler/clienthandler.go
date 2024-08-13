@@ -114,7 +114,7 @@ type Client struct {
     StartTime time.Time // time when side channel connection was made
     Exceptions string // any errors that occurred while running a replay
     MLabUUID string // globally unique ID for M-Lab
-    ReplayResults []ReplayResult // data collected from running a replay
+    ReplayResults []ReplayResult // data collected from running a replay TODO: rename this something like ReplayInfo to make less confusing
     Analysis *analysis.AnalysisResults // analysis results of the test
 }
 

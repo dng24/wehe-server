@@ -8,6 +8,8 @@ import (
     "strconv"
     "strings"
 
+    "github.com/m-lab/uuid"
+
     "wehe-server/internal/clienthandler"
 )
 
@@ -25,26 +27,30 @@ var (
 // Main function for handling old side channel connections.
 // clt: client object containing all the information about the test that is running
 // Returns any errors
-func (sideChannel SideChannel) handleOldSideChannel(clt *clienthandler.Client) error {
-    isLastReplay := false
-    // if this is the last replay, a client object should already exist; use that object instead of
-    // the one passed into this function
+func (sideChannel SideChannel) handleOldSideChannel(conn net.Conn, firstByte []byte) error {
+    clt, err := sideChannel.oldDeclareID(conn, firstByte)
+    if err != nil {
+        return err
+    }
+    defer clt.CleanUp(sideChannel.ConnectedClients)
+
+    // if this is the second or subsequent replay, a client object should already exist; use that
+    // object instead of the one passed into this function
     client, exists := unanalyzedTests.getClient(clt.UserID, strconv.Itoa(clt.TestID))
     if exists {
-        isLastReplay = true
         client.Conn = clt.Conn
         currentReplay, err := clt.GetCurrentReplay()
         if err != nil {
             return err
         }
-        client.AddReplay(currentReplay.ReplayID, currentReplay.ReplayName, isLastReplay)
+        client.AddReplay(currentReplay.ReplayID, currentReplay.ReplayName, clt.IsLastReplay)
         clt = client
     } else {
         unanalyzedTests.addClient(clt)
     }
 
     // Receive server side changes (no longer used)
-    _, err := sideChannel.oldReadRequest(clt.Conn)
+    _, err = sideChannel.oldReadRequest(clt.Conn)
     if err != nil {
         return err
     }
@@ -108,7 +114,7 @@ func (sideChannel SideChannel) handleOldSideChannel(clt *clienthandler.Client) e
     // stop tcp dump
 
     // Analysis
-    if isLastReplay {
+    if clt.IsLastReplay {
         err = clt.AnalyzeTest()
         if err != nil {
             return err
@@ -116,6 +122,136 @@ func (sideChannel SideChannel) handleOldSideChannel(clt *clienthandler.Client) e
     }
 
     return nil
+}
+
+// Receives the ID declared by the clienthandler.
+// conn: the connection to the client
+// Returns a information about the client or any errors
+func (sideChannel SideChannel) oldDeclareID(conn net.Conn, firstByte []byte) (*clienthandler.Client, error) {
+    // TODO: this current doesn't work with new client; figure out how to detect old vs new client
+    // so that oldReadRequest or readRequest can be called appropriately
+    //buffer, err := sideChannel.oldReadRequest(conn)
+    //if err != nil {
+    //    return &clienthandler.Client{}, err
+    //}
+     // read in 10 bytes of data, which contains the message length
+    dataLengthBytes := make([]byte, 9)
+    _, err := io.ReadFull(conn, dataLengthBytes)
+    if err != nil {
+        return nil, err
+    }
+    dataLength, err := strconv.Atoi(string(append(firstByte, dataLengthBytes...)))
+    if err != nil {
+        return nil, err
+    }
+
+    fmt.Printf("We should read %d bytes %v %d\n", dataLength, dataLengthBytes, len(dataLengthBytes))
+
+    // read in the number of bytes specified by the first read
+    buffer := make([]byte, dataLength)
+    _, err = io.ReadFull(conn, buffer)
+    if err != nil {
+        return nil, err
+    }
+
+
+
+    pieces := strings.Split(string(buffer), ";")
+    if len(pieces) < 6 {
+        return &clienthandler.Client{}, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
+    }
+
+    userID := pieces[0]
+
+    replayIDInt, err := strconv.Atoi(pieces[1])
+    if err != nil {
+        return &clienthandler.Client{}, err
+    }
+    var replayID clienthandler.ReplayType
+    if replayIDInt == 0 {
+        replayID = clienthandler.Original
+    } else if replayIDInt == 1 {
+        replayID = clienthandler.Random
+    } else {
+        return &clienthandler.Client{}, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
+    }
+
+    //TODO: change client replay files replay names to use _ instead of -, then delete this terrible replace code
+    replayName := strings.Replace(pieces[2], "-", "_", -1)
+
+    extraString := pieces[3]
+    testID, err := strconv.Atoi(pieces[4])
+    if err != nil {
+        return &clienthandler.Client{}, err
+    }
+    isLastReplay, err := strToBool(pieces[5])
+    if err != nil {
+        return &clienthandler.Client{}, err
+    }
+
+    // Some ISPs may give clients multiple IPs - one for each port. We want to use the test port
+    // as the client's public IP. Client may send us an IP, which is the IP of the client using
+    // the test port. If client does not provide us with an IP, or if the IP provided is 127.0.0.1,
+    // then we just use the side channel IP of the clienthandler.
+    publicIP, err := getClientPublicIP(conn)
+    if err != nil {
+        return &clienthandler.Client{}, err
+    }
+    clientVersion := "1.0"
+    if len(pieces) > 6 {
+        if pieces[6] != "127.0.0.1" {
+            publicIP = pieces[6]
+        }
+        clientVersion = pieces[7]
+    }
+
+    // TODO: this should probably be at the source of the connection
+    tcpConn, ok := conn.(*net.TCPConn)
+    if !ok {
+        return &clienthandler.Client{}, fmt.Errorf("Side Channel expected to be TCP connection; it is not\n")
+    }
+    mlabUUID, err := uuid.FromTCPConn(tcpConn)
+    if err != nil {
+        return &clienthandler.Client{}, err
+    }
+
+    clt := clienthandler.NewClient(conn, userID, extraString, testID, publicIP, clientVersion, mlabUUID)
+    clt.AddReplay(replayID, replayName, isLastReplay)
+
+    fmt.Println(clt)
+    return clt, nil
+}
+
+// Converts a string to boolean.
+// str: the string to convert into a bool
+// Returns a bool or any errors
+func strToBool(str string) (bool, error) {
+    lowerStr := strings.ToLower(str)
+    if lowerStr == "true" {
+        return true, nil
+    } else if lowerStr == "false" {
+        return false, nil
+    } else {
+        return false, fmt.Errorf("Cannot parse '%s' into a bool\n", str)
+    }
+}
+
+// Gets the client IP of a connection.
+// conn: the client connection
+// Returns the client IP or any erros
+func getClientPublicIP(conn net.Conn) (string, error) {
+    remoteAddr := conn.RemoteAddr().String()
+
+    host, _, err := net.SplitHostPort(remoteAddr)
+    if err != nil {
+        return "", err
+    }
+
+    ip := net.ParseIP(host)
+    if ip == nil {
+        return "", fmt.Errorf("invalid IP address: %s", host)
+    }
+    return ip.String(), nil
 }
 
 // Determines if the client can run a replay.
