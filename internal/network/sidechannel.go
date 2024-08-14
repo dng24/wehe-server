@@ -3,9 +3,9 @@
 package network
 
 import (
-    "fmt"
     "encoding/binary"
     "encoding/json"
+    "fmt"
     "io"
     "net"
     "strconv"
@@ -23,7 +23,10 @@ const (
 type opcode byte // request type from the client
 
 const (
-    ask4permission opcode = iota
+    invalid opcode = 255
+    oldDeclareID opcode = 0x30 // first byte of old protocol is 0x30, so we use that to detect it
+    receiveID opcode = iota
+    ask4permission
     mobileStats
     throughputs
     declareReplay
@@ -94,66 +97,60 @@ func (sideChannel SideChannel) StartServer(errChan chan<- error) {
 // conn: the client side channel connection
 func (sideChannel SideChannel) handleConnection(conn net.Conn) {
     defer conn.Close()
+    var clt *clienthandler.Client
+    // TODO: add feature that forces user to upgrade if their version is too old
 
-    firstByte := make([]byte, 1)
-    _, err := conn.Read(firstByte)
-    if err != nil {
-        handleSideChannelError(err)
-        return
-    }
-
-    // Wehe version before 4.0 have a different protocol than current Wehe versions
-    if firstByte[0] == 0x30 {
-        fmt.Println("Handling old client")
-        err = sideChannel.handleOldSideChannel(conn, firstByte)
-    } else {
-        // TODO: add feature that forces user to upgrade if their version is too old
-        clt, err := sideChannel.receiveID(conn, firstByte)
+    for {
+        op, first4Bytes, message, err := sideChannel.readRequest(conn)
         if err != nil {
-            handleSideChannelError(err)
-            return
+            if err != io.EOF {
+                handleSideChannelError(err)
+            }
+            break
         }
-        defer clt.CleanUp(sideChannel.ConnectedClients)
+        fmt.Println("Got opcode:", op)
 
-        for {
-            buffer, err := sideChannel.readRequest(conn)
-            if err != nil {
-                if err == io.EOF {
-                    err = nil
-                }
+        if clt == nil && op != oldDeclareID && op != receiveID {
+            handleSideChannelError(fmt.Errorf("Client is nil. Was test ever requested?\n"))
+            break
+        }
+
+        switch op {
+        case oldDeclareID:
+            err = sideChannel.handleOldSideChannel(conn, first4Bytes)
+        case receiveID:
+            clt, err = sideChannel.receiveID(conn, message)
+            if err == nil {
+                defer clt.CleanUp(sideChannel.ConnectedClients)
+            }
+        case ask4permission:
+            err = sideChannel.ask4Permission(clt)
+        case mobileStats:
+            err = sideChannel.receiveMobileStats(clt, message)
+        case throughputs:
+            err = sideChannel.receiveThroughputs(clt, message)
+            if err == nil {
+                err = clt.WriteReplayInfoToFile(sideChannel.TmpResultsDir)
+            }
+        case declareReplay:
+            err = sideChannel.declareReplay(clt, message)
+        case analyzeTest:
+            err = sideChannel.analyzeTest(clt)
+            /*if err != nil {
                 break
             }
-            opcode := buffer[0]
-            message := string(buffer[1:len(buffer)])
-            fmt.Println("Got opcode:", opcode)
-            switch opcode {
-            case byte(ask4permission):
-                err = sideChannel.ask4Permission(clt)
-            case byte(mobileStats):
-                err = sideChannel.receiveMobileStats(clt, message)
-            case byte(throughputs):
-                err = sideChannel.receiveThroughputs(clt, message)
-                if err == nil {
-                    err = clt.WriteReplayInfoToFile(sideChannel.TmpResultsDir)
-                }
-            case byte(declareReplay):
-                err = sideChannel.declareReplay(clt, message)
-            case byte(analyzeTest):
-                err = sideChannel.analyzeTest(clt)
-                /*if err != nil {
-                    break
-                }
-                err = clt.WriteResultsToFile()
-                if err == nil {
-                    err = clt.WriteReplayInfoToFile(sideChannel.TmpResultsDir)
-                }*/
-            default:
-                err = fmt.Errorf("Unknown side channel opcode: %d\n", opcode)
-            }
+            err = clt.WriteResultsToFile()
+            if err == nil {
+                err = clt.WriteReplayInfoToFile(sideChannel.TmpResultsDir)
+            }*/
+        default:
+            err = fmt.Errorf("Unknown side channel opcode: %d\n", op)
         }
-    }
-    if err != nil {
-        handleSideChannelError(err)
+
+        if err != nil {
+            handleSideChannelError(err)
+            break
+        }
     }
 }
 
@@ -164,27 +161,33 @@ func handleSideChannelError(err error) {
     fmt.Println("Side channel error:", err)
 }
 
-// Reads a request from the client. First, a 32 bit, little endian unsigned message length is read.
-// Using this length, the acutal message is then read.
+// Reads a request from the client. First, an 8-bit opcode and 24-bit big-endian unsigned message
+// length is read. Using this length, the acutal message is then read.
 // conn: the connection to the client
-// Returns the message read and any errors
-func (sideChannel SideChannel) readRequest(conn net.Conn) ([]byte, error) {
-    // get size of message
-    dataLengthBytes := make([]byte, 4)
-    // TODO: this might not read all the bytes
-    _, err := conn.Read(dataLengthBytes)
+// Returns the opcode, first 4 bytes read (if old protocol), message read, and any errors
+func (sideChannel SideChannel) readRequest(conn net.Conn) (opcode, []byte, string, error) {
+    // get opcode and size of message
+    opcodeAndDataLength := make([]byte, 4)
+    _, err := io.ReadFull(conn, opcodeAndDataLength)
     if err != nil {
-        return nil, err
+        return opcode(invalid), nil, "", err
     }
-    dataLength := binary.LittleEndian.Uint32(dataLengthBytes)
+    op := opcode(opcodeAndDataLength[0])
+    if op == oldDeclareID {
+        // if old protocol is used, return the data that has been read so far and let the old
+        // protocol functions handle everything
+        return op, opcodeAndDataLength, "", nil
+    }
+    opcodeAndDataLength[0] = 0 // zero out first byte so that 24-bit length can be read with Uint32
+    dataLength := binary.BigEndian.Uint32(opcodeAndDataLength)
 
     // get the message
-    buffer := make([]byte, dataLength)
-    n, err := conn.Read(buffer)
+    message := make([]byte, dataLength)
+    _, err = io.ReadFull(conn, message)
     if err != nil {
-        return nil, err
+        return opcode(invalid), nil, "", err
     }
-    return buffer[:n], nil
+    return op, nil, string(message), nil
 }
 
 // Sends a response back to the client.
@@ -198,7 +201,7 @@ func (sideChannel SideChannel) sendResponse(clt *clienthandler.Client, respCode 
 
     // send size of message
     messageLengthBytes := make([]byte, 4)
-    binary.LittleEndian.PutUint32(messageLengthBytes, uint32(messageLength))
+    binary.BigEndian.PutUint32(messageLengthBytes, uint32(messageLength))
     _, err := clt.Conn.Write(messageLengthBytes)
     if err != nil {
         return err
@@ -230,42 +233,21 @@ func getMessage(buffer []byte, n int) (string, error) {
     return string(buffer[1:n]), nil
 }
 
-// Receives the ID declare by the clienthandler.
+// Receives information about the test the client has requested to run.
 // conn: the connection to the client
+// message: information about the test requested to be run
 // Returns a information about the client or any errors
-func (sideChannel SideChannel) receiveID(conn net.Conn, firstByte []byte) (*clienthandler.Client, error) {
-    //buffer, err := sideChannel.readRequest(conn)
-    //if err != nil {
-    //    return &clienthandler.Client{}, err
-    //}
-
-    // TODO: This is jank
-    // get size of message
-    dataLengthBytes := make([]byte, 3)
-    _, err := conn.Read(dataLengthBytes)
-    if err != nil {
-        return nil, err
-    }
-    dataLength := binary.LittleEndian.Uint32(append(firstByte, dataLengthBytes...))
-    // get the message
-    buffer := make([]byte, dataLength)
-    n, err := conn.Read(buffer)
-    if err != nil {
-        return nil, err
-    }
-    buffer = buffer[:n]
-
-
-    pieces := strings.Split(string(buffer), ";")
+func (sideChannel SideChannel) receiveID(conn net.Conn, message string) (*clienthandler.Client, error) {
+    pieces := strings.Split(message, ";")
     if len(pieces) < 6 {
-        return &clienthandler.Client{}, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
+        return nil, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
     }
 
     userID := pieces[0]
 
     replayIDInt, err := strconv.Atoi(pieces[1])
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
     var replayID clienthandler.ReplayType
     if replayIDInt == 0 {
@@ -273,7 +255,7 @@ func (sideChannel SideChannel) receiveID(conn net.Conn, firstByte []byte) (*clie
     } else if replayIDInt == 1 {
         replayID = clienthandler.Random
     } else {
-        return &clienthandler.Client{}, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
+        return nil, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
     }
 
     //TODO: change client replay files replay names to use _ instead of -, then delete this terrible replace code
@@ -282,11 +264,11 @@ func (sideChannel SideChannel) receiveID(conn net.Conn, firstByte []byte) (*clie
     extraString := pieces[3]
     testID, err := strconv.Atoi(pieces[4])
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
     isLastReplay, err := strToBool(pieces[5])
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
 
     // Some ISPs may give clients multiple IPs - one for each port. We want to use the test port
@@ -295,7 +277,7 @@ func (sideChannel SideChannel) receiveID(conn net.Conn, firstByte []byte) (*clie
     // then we just use the side channel IP of the clienthandler.
     publicIP, err := getClientPublicIP(conn)
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
     clientVersion := "1.0"
     if len(pieces) > 6 {
@@ -308,11 +290,11 @@ func (sideChannel SideChannel) receiveID(conn net.Conn, firstByte []byte) (*clie
     // TODO: this should probably be at the source of the connection
     tcpConn, ok := conn.(*net.TCPConn)
     if !ok {
-        return &clienthandler.Client{}, fmt.Errorf("Side Channel expected to be TCP connection; it is not\n")
+        return nil, fmt.Errorf("Side Channel expected to be TCP connection; it is not\n")
     }
     mlabUUID, err := uuid.FromTCPConn(tcpConn)
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
 
     clt := clienthandler.NewClient(conn, userID, extraString, testID, publicIP, clientVersion, mlabUUID)

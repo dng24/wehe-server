@@ -10,8 +10,6 @@ Things that are done
 
 List of TODOs
 - allow requests for different analyses
-- make sure all conn.Read are actually getting the full message
-  - use buffered io
 - should side channel use binary buffers instead of string?
   - combine receive id and ask4permission
 - confirmation replays
@@ -21,6 +19,7 @@ List of TODOs
 - implement "replay store" where users/servers can download/update/delete replays
   - update certs as well
 - timeouts
+- double check tcp and udp receiving all bytes its supposed to on conn.Read
 - add logging
   - print out stack trace on errors
 - write unit tests

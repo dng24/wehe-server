@@ -26,9 +26,11 @@ var (
 
 // Main function for handling old side channel connections.
 // clt: client object containing all the information about the test that is running
+// first4Bytes: the first 4 bytes of the declare ID data length, which was read to determine that
+//     the client uses the old protocol
 // Returns any errors
-func (sideChannel SideChannel) handleOldSideChannel(conn net.Conn, firstByte []byte) error {
-    clt, err := sideChannel.oldDeclareID(conn, firstByte)
+func (sideChannel SideChannel) handleOldSideChannel(conn net.Conn, first4Bytes []byte) error {
+    clt, err := sideChannel.oldDeclareID(conn, first4Bytes)
     if err != nil {
         return err
     }
@@ -126,21 +128,17 @@ func (sideChannel SideChannel) handleOldSideChannel(conn net.Conn, firstByte []b
 
 // Receives the ID declared by the clienthandler.
 // conn: the connection to the client
+// first4Bytes: the first 4 bytes of the declare ID data length, which was read to determine that
+//     the client uses the old protocol
 // Returns a information about the client or any errors
-func (sideChannel SideChannel) oldDeclareID(conn net.Conn, firstByte []byte) (*clienthandler.Client, error) {
-    // TODO: this current doesn't work with new client; figure out how to detect old vs new client
-    // so that oldReadRequest or readRequest can be called appropriately
-    //buffer, err := sideChannel.oldReadRequest(conn)
-    //if err != nil {
-    //    return &clienthandler.Client{}, err
-    //}
-     // read in 10 bytes of data, which contains the message length
-    dataLengthBytes := make([]byte, 9)
+func (sideChannel SideChannel) oldDeclareID(conn net.Conn, first4Bytes []byte) (*clienthandler.Client, error) {
+    // read in the remaining 6 bytes of the 10 byte message length
+    dataLengthBytes := make([]byte, 6)
     _, err := io.ReadFull(conn, dataLengthBytes)
     if err != nil {
         return nil, err
     }
-    dataLength, err := strconv.Atoi(string(append(firstByte, dataLengthBytes...)))
+    dataLength, err := strconv.Atoi(string(append(first4Bytes, dataLengthBytes...)))
     if err != nil {
         return nil, err
     }
@@ -154,18 +152,16 @@ func (sideChannel SideChannel) oldDeclareID(conn net.Conn, firstByte []byte) (*c
         return nil, err
     }
 
-
-
     pieces := strings.Split(string(buffer), ";")
     if len(pieces) < 6 {
-        return &clienthandler.Client{}, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
+        return nil, fmt.Errorf("Expected to receive at least 6 pieces from declare ID; only received %d.\n", len(pieces))
     }
 
     userID := pieces[0]
 
     replayIDInt, err := strconv.Atoi(pieces[1])
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
     var replayID clienthandler.ReplayType
     if replayIDInt == 0 {
@@ -173,7 +169,7 @@ func (sideChannel SideChannel) oldDeclareID(conn net.Conn, firstByte []byte) (*c
     } else if replayIDInt == 1 {
         replayID = clienthandler.Random
     } else {
-        return &clienthandler.Client{}, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
+        return nil, fmt.Errorf("Unexpected replay ID: %d; must be 0 (original) or 1 (random)", replayIDInt)
     }
 
     //TODO: change client replay files replay names to use _ instead of -, then delete this terrible replace code
@@ -182,11 +178,11 @@ func (sideChannel SideChannel) oldDeclareID(conn net.Conn, firstByte []byte) (*c
     extraString := pieces[3]
     testID, err := strconv.Atoi(pieces[4])
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
     isLastReplay, err := strToBool(pieces[5])
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
 
     // Some ISPs may give clients multiple IPs - one for each port. We want to use the test port
@@ -195,7 +191,7 @@ func (sideChannel SideChannel) oldDeclareID(conn net.Conn, firstByte []byte) (*c
     // then we just use the side channel IP of the clienthandler.
     publicIP, err := getClientPublicIP(conn)
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
     clientVersion := "1.0"
     if len(pieces) > 6 {
@@ -208,11 +204,11 @@ func (sideChannel SideChannel) oldDeclareID(conn net.Conn, firstByte []byte) (*c
     // TODO: this should probably be at the source of the connection
     tcpConn, ok := conn.(*net.TCPConn)
     if !ok {
-        return &clienthandler.Client{}, fmt.Errorf("Side Channel expected to be TCP connection; it is not\n")
+        return nil, fmt.Errorf("Side Channel expected to be TCP connection; it is not\n")
     }
     mlabUUID, err := uuid.FromTCPConn(tcpConn)
     if err != nil {
-        return &clienthandler.Client{}, err
+        return nil, err
     }
 
     clt := clienthandler.NewClient(conn, userID, extraString, testID, publicIP, clientVersion, mlabUUID)

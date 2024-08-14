@@ -98,7 +98,7 @@ func (tcpServer TCPServer) handleConnection(conn net.Conn) {
     }
 
     // each response set contains packets that should be sent after server receives a certain number of bytes from client
-    // TODO: add hash checkigng?
+    // TODO: add hash checking?
     for i, response := range replayInfo.Responses {
         responseSet := response.(testdata.TCPResponseSet)
         for {
