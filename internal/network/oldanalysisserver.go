@@ -2,12 +2,12 @@
 package network
 
 import (
+    "crypto/tls"
     "fmt"
     "net/http"
     "net/url"
     "strconv"
     "sync"
-    "time"
 
     "wehe-server/internal/clienthandler"
 )
@@ -53,12 +53,20 @@ func (asc *analysisServerClient) deleteClient(userID string, testID string) {
 }
 
 // Starts the old HTTPS analyzer server.
+// cert: TLS cert to be used for the server
 // errChan: error channel to return errors
-func StartOldAnalyzerServer(errChan chan<- error) {
+func StartOldAnalyzerServer(cert tls.Certificate, errChan chan<- error) {
     http.HandleFunc("/Results", oldHandleRequest)
 
     fmt.Println("Listening on old analysis server", analyzerHTTPSPort)
-    err := http.ListenAndServe(fmt.Sprintf(":%d", analyzerHTTPSPort), nil)
+    tlsConfig := &tls.Config{
+        Certificates: []tls.Certificate{cert},
+    }
+    server := &http.Server{
+        Addr: fmt.Sprintf(":%d", analyzerHTTPSPort),
+        TLSConfig: tlsConfig,
+    }
+    err := server.ListenAndServeTLS("", "")
     errChan <- err
 }
 
@@ -80,11 +88,11 @@ func oldHandleRequest(w http.ResponseWriter, r *http.Request) {
 // Receives the POST request to analyze a test. In this new implementation, analysis is actually
 // called in oldsidechannel.go:handleOldSideChannel after throughputs are received. The analysis
 // takes too long, as the old client keep timing out before the analysis is ready to be returned.
-// Calling the analysis earlier allows for more buffer time for the analysis to finish.
+// Calling the analysis in the side channel allows the client to be blocked until the analysis
+// results are ready.
 // w: HTTP output channel
 // r: the HTTP request
 func oldAnalyzeTest(w http.ResponseWriter, r *http.Request) {
-    time.Sleep(4 * time.Second) // make some buffer time so getResult doesn't time out
     w.WriteHeader(http.StatusOK)
     w.Write([]byte("{\"success\": true}"))
 }
@@ -172,7 +180,6 @@ func oldGetResult(w http.ResponseWriter, r *http.Request) {
         return
     }
 
-    time.Sleep(4 * time.Second) // add some buffer time to allow analysis to finish
     if clt.Analysis == nil {
         w.Write([]byte("{\"success\": false, \"error\": \"No result found\"}"))
         return

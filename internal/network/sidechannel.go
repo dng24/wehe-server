@@ -3,6 +3,7 @@
 package network
 
 import (
+    "crypto/tls"
     "encoding/binary"
     "encoding/json"
     "fmt"
@@ -67,10 +68,11 @@ func NewSideChannel(ip string, replayNames []string, uuidPrefixFile string, tmpR
 }
 
 // Starts the side channel server and listen for client connections.
+// cert: the server cert
 // errChan: channel used to communicate errors back to the main thread
-func (sideChannel SideChannel) StartServer(errChan chan<- error) {
-    // TODO: figure out tls
-    listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", sideChannel.IP, sideChannel.Port))
+func (sideChannel SideChannel) StartServer(cert tls.Certificate, errChan chan<- error) {
+    tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+    listener, err := tls.Listen("tcp", fmt.Sprintf("%s:%d", sideChannel.IP, sideChannel.Port), tlsConfig)
     if err != nil {
         errChan <- err
         return
@@ -103,7 +105,8 @@ func (sideChannel SideChannel) handleConnection(conn net.Conn) {
     for {
         op, first4Bytes, message, err := sideChannel.readRequest(conn)
         if err != nil {
-            if err != io.EOF {
+            // when client disconnects, an error is thrown, but that isn't really an error
+            if err != io.EOF && !strings.Contains(err.Error(), "tls: user canceled") {
                 handleSideChannelError(err)
             }
             break
@@ -287,8 +290,11 @@ func (sideChannel SideChannel) receiveID(conn net.Conn, message string) (*client
         clientVersion = pieces[7]
     }
 
-    // TODO: this should probably be at the source of the connection
-    tcpConn, ok := conn.(*net.TCPConn)
+    tlsConn, ok := conn.(*tls.Conn)
+    if !ok {
+        return nil, fmt.Errorf("Side Channel expected to be TLS connection; it is not\n")
+    }
+    tcpConn, ok := tlsConn.NetConn().(*net.TCPConn)
     if !ok {
         return nil, fmt.Errorf("Side Channel expected to be TCP connection; it is not\n")
     }

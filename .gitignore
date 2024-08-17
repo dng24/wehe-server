@@ -1,4 +1,5 @@
 *.swp
+ssl/
 results/
 tmpResults/
 .DS_Store

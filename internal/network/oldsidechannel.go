@@ -2,6 +2,7 @@
 package network
 
 import (
+    "crypto/tls"
     "fmt"
     "io"
     "net"
@@ -201,8 +202,11 @@ func (sideChannel SideChannel) oldDeclareID(conn net.Conn, first4Bytes []byte) (
         clientVersion = pieces[7]
     }
 
-    // TODO: this should probably be at the source of the connection
-    tcpConn, ok := conn.(*net.TCPConn)
+    tlsConn, ok := conn.(*tls.Conn)
+    if !ok {
+        return nil, fmt.Errorf("Side Channel expected to be TLS connection; it is not\n")
+    }
+    tcpConn, ok := tlsConn.NetConn().(*net.TCPConn)
     if !ok {
         return nil, fmt.Errorf("Side Channel expected to be TCP connection; it is not\n")
     }

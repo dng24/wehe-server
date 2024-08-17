@@ -7,6 +7,7 @@ Things that are done
 - udp replays
 - analyzer
 - old side channel backwards compatibility
+- tls
 
 List of TODOs
 - allow requests for different analyses
@@ -15,13 +16,13 @@ List of TODOs
 - confirmation replays
 - finish implementing pcap capture of replay traffic
 - use first packet to detect replay instead of IP
-- implement encryption/certs for side channel
 - implement "replay store" where users/servers can download/update/delete replays
   - update certs as well
 - timeouts
 - double check tcp and udp receiving all bytes its supposed to on conn.Read
 - add logging
   - print out stack trace on errors
+- figure out how to change root ca cert without losing too many clients
 - write unit tests
 - fix all the todos scattered in the code
 - more testing

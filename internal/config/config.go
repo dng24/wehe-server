@@ -13,6 +13,11 @@ import (
 type Config struct {
     TestsDir string
     PortNumbersFile string
+    HostInfoFilename string
+    CACertFilename string
+    CACertPrivKeyFilename string
+    ServerCertFilename string
+    ServerCertPrivKeyFilename string
     TmpResultsDir string
     ResultsDir string
     UUIDPrefixFile string
@@ -36,6 +41,31 @@ func New(configPath *string) (Config, error) {
     }
 
     config.PortNumbersFile, err = getString(defaultSection, "port_numbers_file")
+    if err != nil {
+        return config, err
+    }
+
+    config.HostInfoFilename, err = getString(defaultSection, "host_info_filename")
+    if err != nil {
+        return config, err
+    }
+
+    config.CACertFilename, err = getString(defaultSection, "ca_cert_filename")
+    if err != nil {
+        return config, err
+    }
+
+    config.CACertPrivKeyFilename, err = getString(defaultSection, "ca_cert_priv_key_filename")
+    if err != nil {
+        return config, err
+    }
+
+    config.ServerCertFilename, err = getString(defaultSection, "server_cert_filename")
+    if err != nil {
+        return config, err
+    }
+
+    config.ServerCertPrivKeyFilename, err = getString(defaultSection, "server_cert_priv_key_filename")
     if err != nil {
         return config, err
     }
